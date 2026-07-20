@@ -342,6 +342,34 @@ chmod +x retarget_project.sh
 
 <a id="sec-1-5"></a>
 
+更多替换
+```bash
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+# 按你的新日期修改
+dates_all="220114 221118 221230 230127 230310 230421 230505 240126"
+
+pairs_all="220114-221118 220114-221230 220114-230127 220114-230310 221118-221230 221118-230127 221118-230310 221118-230421 221230-230127 221230-230310 221230-230421 221230-230505 230127-230310 230127-230421 230127-230505 230127-240126 230310-230421 230310-230505 230310-240126 230421-230505 230421-240126 230505-240126"
+
+ref_date="230127"
+
+# 1. 修 run_cmd1_tail.slurm 里的 sec_date
+perl -0pi -e "s/-ref_date ${ref_date} -sec_date .*? -nrlks1/-ref_date ${ref_date} -sec_date ${dates_all} -nrlks1/s" run_cmd1_tail.slurm
+
+# 2. 修 ion pair_up/check 的 -pairs 列表
+perl -0pi -e "s/-pairs .*?\n/ -pairs ${pairs_all}\n/s" run_ion_pairup.slurm
+perl -0pi -e "s/-pairs .*?\n/ -pairs ${pairs_all}\n/s" run_ion_check.slurm
+
+# 3. 修 radar_dem_offset 的 amp pair
+# 这里选一个和参考日期相连、质量较好的 pair
+old_amp=$(grep -o '../../pairs/[^ ]*\.amp' run_radar_dem_offset.slurm | head -1)
+new_amp="../../pairs/220114-230127/insar/220114-230127_2rlks_3alks.amp"
+sed -i "s#${old_amp}#${new_amp}#" run_radar_dem_offset.slurm
+
+# 4. 删除旧 MintPy 输出文件，避免旧日期混进检查
+rm -f mintpy/coherenceSpatialAvg.txt
+```
+
 ### 1.5 检查替换结果
 
 检查旧值是否还残留：
