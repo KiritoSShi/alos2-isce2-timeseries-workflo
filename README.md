@@ -18,7 +18,7 @@
   - [1.4 一键替换旧工程参数](#sec-1-4)
   - [1.5 检查替换结果](#sec-1-5)
   - [1.6 检查 alosStack.xml 并重新生成 cmd](#sec-1-6)
-- [2. 工程步骤：手动 -> 自动 -> 手动](#sec-2)
+- [2. 工程步骤：哪些 Slurm 自动连跑，哪里手动检查](#sec-2)
   - [2.1 先确认所有 Slurm 都在](#sec-2-1)
   - [2.2 阶段 1：几何准备](#sec-2-2)
   - [2.3 阶段 2：干涉图、多视、几何多视](#sec-2-3)
@@ -338,7 +338,26 @@ sed -i 's/ -use_wbd_offset//g' cmd_1.sh
 
 <a id="sec-2"></a>
 
-## 2. 工程步骤：手动 -> 自动 -> 手动
+## 2. 工程步骤：哪些 Slurm 自动连跑，哪里手动检查
+
+这一章只讲工程怎么跑。判断规则是：
+
+```text
+自动连跑的 Slurm：可以放进 submit_*.sh，用 afterok 自动接下一步。
+必须手动检查：不是一个 Slurm，而是某一组 Slurm 跑完后要停下来检查结果。
+```
+
+总表：
+
+| 阶段 | 自动连跑的 Slurm | 跑完后必须手动检查什么 | 检查通过后 |
+|---|---|---|---|
+| 阶段 1 几何准备 | `run_offset_array.slurm` -> `run_resample_array.slurm` -> `run_cmd1_tail.slurm` -> `run_geo2rdr_array.slurm` | `cull.off`、`dates_resampled`、`lat/lon/hgt/los`、`rg/az.off` 是否齐全 | 跑阶段 2 |
+| 阶段 2 干涉图/多视 | `run_form_array.slurm` -> `run_mosaic_array.slurm` -> `run_radar_dem_offset.slurm` -> `run_rect_range_offset.slurm` -> `run_diff_array.slurm` -> `run_look_array.slurm` -> `run_look_geom.slurm` | `.cor`、`diff_*.int` 数量是否等于 pair 数；`affine_transform.txt` 是否正常；相干性是否明显异常 | 跑阶段 3 |
+| 阶段 3 电离层检查图 | `run_ion_pairup.slurm` -> `run_ion_unwrap_array.slurm` -> `run_ion_filt_array.slurm` -> `run_ion_prep_array.slurm` -> `run_ion_cal_array.slurm` -> `run_ion_check.slurm` | 必须人工看 `fig_ion/*.tif`，判断是否有坏 pair | 没坏 pair 或修改 pair 列表后，跑阶段 4 |
+| 阶段 4 应用 ion 校正 | `run_ion_ls.slurm` -> `run_ion_correct_array.slurm` | `dates_ion` 是否生成；`diff_*_ori.int` 是否备份；ion 校正是否应用回 `pairs` | 跑阶段 5 |
+| 阶段 5 最终结果 | `run_filt_array.slurm` -> `run_unwrap_array.slurm` -> `run_geocode_array.slurm` -> `run_geocode_los.slurm` -> `mintpy/run_mintpy_load.slurm` -> `mintpy/run_mintpy_all.slurm` | `filt_*.int`、`.unw`、`.geo`、MintPy `.h5` 是否生成；unwrap/MintPy 结果是否合理 | 归档和可视化 |
+
+换句话说：**你手动运行 5 个 `submit_*.sh`，每个 `submit_*.sh` 里面自动提交一串 `run_*.slurm`；每串跑完后你人工检查一次。**
 
 <a id="sec-2-1"></a>
 
@@ -366,7 +385,7 @@ ls mintpy/run_mintpy_load.slurm mintpy/run_mintpy_all.slurm
 生成 offset、重采样 SLC、参考日期几何 lat/lon/hgt/los、非参考日期几何 offset。
 ```
 
-包含 Slurm：
+自动连跑的 Slurm：
 
 ```text
 run_offset_array.slurm
@@ -435,7 +454,7 @@ cull.off 数量 = 非参考日期数量
 形成 pair 干涉图，做 mosaic，估计 radar/DEM affine，修正 range offset，生成差分干涉图和相干性。
 ```
 
-包含 Slurm：
+自动连跑的 Slurm：
 
 ```text
 run_form_array.slurm
@@ -511,7 +530,7 @@ affine_transform.txt 存在，RMS 不离谱
 准备 pairs_ion，计算每个 pair 的电离层相位，并生成 fig_ion 检查图。
 ```
 
-包含 Slurm：
+自动连跑的 Slurm：
 
 ```text
 run_ion_pairup.slurm
@@ -586,7 +605,7 @@ find fig_ion -type f | sort
 用筛选后的 ion pair 反演各日期 ion，并应用回 pairs 下的差分干涉图。
 ```
 
-包含 Slurm：
+自动连跑的 Slurm：
 
 ```text
 run_ion_ls.slurm
@@ -645,7 +664,7 @@ dates_ion 里有每个日期的 ion 文件
 滤波、SNAPHU 解缠、地理编码，然后进入 MintPy 时序反演和速度场输出。
 ```
 
-包含 Slurm：
+自动连跑的 Slurm：
 
 ```text
 run_filt_array.slurm
