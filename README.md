@@ -230,27 +230,189 @@ sed -i 's/ -use_wbd_offset//g' cmd_1.sh
 
 ### 0.6 第五步：分段自动跑
 
-这里的“自动”不是把所有 Slurm 合并成一个大 Slurm，而是用 `sbatch --dependency=afterok:JOBID` 自动接力。原来的 Slurm 仍然保留。
+这里的“自动”不是把所有 Slurm 合并成一个大 Slurm，而是用 `sbatch --dependency=afterok:JOBID` 自动接力。原来的 `run_*.slurm` 必须保留在目录里。
 
-你会有 5 个提交脚本：
+这一小节按真正操作顺序写：**手动准备 -> 自动跑一段 -> 手动检查 -> 再自动跑下一段**。
 
-```text
-submit_01_geometry.sh          自动跑几何准备
-submit_02_pairs.sh             自动跑干涉图、多视、几何多视
-submit_03_ion_until_check.sh   自动跑到 ion_check 图
-submit_04_ion_apply.sh         人工看完 ion 图后，应用 ion 校正
-submit_05_final_mintpy.sh      滤波、解缠、地理编码、MintPy
+#### 0.6.1 手动：先确认这些文件都在
+
+```bash
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+ls run_offset_array.slurm run_resample_array.slurm run_cmd1_tail.slurm run_geo2rdr_array.slurm
+ls run_form_array.slurm run_mosaic_array.slurm run_radar_dem_offset.slurm run_rect_range_offset.slurm run_diff_array.slurm run_look_array.slurm run_look_geom.slurm
+ls run_ion_pairup.slurm run_ion_unwrap_array.slurm run_ion_filt_array.slurm run_ion_prep_array.slurm run_ion_cal_array.slurm run_ion_check.slurm run_ion_ls.slurm run_ion_correct_array.slurm
+ls run_filt_array.slurm run_unwrap_array.slurm run_geocode_array.slurm run_geocode_los.slurm
+ls mintpy/run_mintpy_load.slurm mintpy/run_mintpy_all.slurm
 ```
 
-这些提交脚本的完整内容在第 18.4 到第 18.8 节。
+如果这里有文件不存在，先不要跑自动链，回去检查复制旧工程是否完整。
 
-实际执行顺序：
+#### 0.6.2 手动：创建 5 个提交脚本
+
+这 5 个是“提交脚本”，用 `bash` 运行；它们内部会自动 `sbatch` 你的 `run_*.slurm`。
+
+**submit_01_geometry.sh**
+
+```bash
+nano submit_01_geometry.sh
+```
+
+写入：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+jid_offset=$(sbatch --parsable run_offset_array.slurm)
+jid_resample=$(sbatch --parsable --dependency=afterok:$jid_offset run_resample_array.slurm)
+jid_tail=$(sbatch --parsable --dependency=afterok:$jid_resample run_cmd1_tail.slurm)
+jid_geo2rdr=$(sbatch --parsable --dependency=afterok:$jid_tail run_geo2rdr_array.slurm)
+
+echo "offset    $jid_offset"
+echo "resample  $jid_resample"
+echo "rdr2geo   $jid_tail"
+echo "geo2rdr   $jid_geo2rdr"
+echo "Next manual check after geo2rdr finishes."
+```
+
+**submit_02_pairs.sh**
+
+```bash
+nano submit_02_pairs.sh
+```
+
+写入：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+jid_form=$(sbatch --parsable run_form_array.slurm)
+jid_mosaic=$(sbatch --parsable --dependency=afterok:$jid_form run_mosaic_array.slurm)
+jid_rdrdem=$(sbatch --parsable --dependency=afterok:$jid_mosaic run_radar_dem_offset.slurm)
+jid_rect=$(sbatch --parsable --dependency=afterok:$jid_rdrdem run_rect_range_offset.slurm)
+jid_diff=$(sbatch --parsable --dependency=afterok:$jid_rect run_diff_array.slurm)
+jid_look=$(sbatch --parsable --dependency=afterok:$jid_diff run_look_array.slurm)
+jid_geom=$(sbatch --parsable --dependency=afterok:$jid_look run_look_geom.slurm)
+
+echo "form      $jid_form"
+echo "mosaic    $jid_mosaic"
+echo "rdrdem    $jid_rdrdem"
+echo "rect      $jid_rect"
+echo "diff      $jid_diff"
+echo "look      $jid_look"
+echo "lookgeom  $jid_geom"
+echo "Next manual check after lookgeom finishes."
+```
+
+**submit_03_ion_until_check.sh**
+
+```bash
+nano submit_03_ion_until_check.sh
+```
+
+写入：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+jid_pairup=$(sbatch --parsable run_ion_pairup.slurm)
+jid_unwrap=$(sbatch --parsable --dependency=afterok:$jid_pairup run_ion_unwrap_array.slurm)
+jid_filt=$(sbatch --parsable --dependency=afterok:$jid_unwrap run_ion_filt_array.slurm)
+jid_prep=$(sbatch --parsable --dependency=afterok:$jid_filt run_ion_prep_array.slurm)
+jid_cal=$(sbatch --parsable --dependency=afterok:$jid_prep run_ion_cal_array.slurm)
+jid_check=$(sbatch --parsable --dependency=afterok:$jid_cal run_ion_check.slurm)
+
+echo "ion_pairup $jid_pairup"
+echo "ion_unwrap $jid_unwrap"
+echo "ion_filt   $jid_filt"
+echo "ion_prep   $jid_prep"
+echo "ion_cal    $jid_cal"
+echo "ion_check  $jid_check"
+echo "STOP after ion_check: inspect fig_ion/*.tif manually."
+```
+
+**submit_04_ion_apply.sh**
+
+```bash
+nano submit_04_ion_apply.sh
+```
+
+写入：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+jid_ls=$(sbatch --parsable run_ion_ls.slurm)
+jid_correct=$(sbatch --parsable --dependency=afterok:$jid_ls run_ion_correct_array.slurm)
+
+echo "ion_ls      $jid_ls"
+echo "ion_correct $jid_correct"
+echo "Next manual check after ion_correct finishes."
+```
+
+**submit_05_final_mintpy.sh**
+
+```bash
+nano submit_05_final_mintpy.sh
+```
+
+写入：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+jid_filt=$(sbatch --parsable run_filt_array.slurm)
+jid_unwrap=$(sbatch --parsable --dependency=afterok:$jid_filt run_unwrap_array.slurm)
+jid_geocode=$(sbatch --parsable --dependency=afterok:$jid_unwrap run_geocode_array.slurm)
+jid_los=$(sbatch --parsable --dependency=afterok:$jid_geocode run_geocode_los.slurm)
+jid_mint_load=$(sbatch --parsable --dependency=afterok:$jid_los mintpy/run_mintpy_load.slurm)
+jid_mint_all=$(sbatch --parsable --dependency=afterok:$jid_mint_load mintpy/run_mintpy_all.slurm)
+
+echo "filt       $jid_filt"
+echo "unwrap     $jid_unwrap"
+echo "geocode    $jid_geocode"
+echo "geocodeLOS $jid_los"
+echo "mintLoad   $jid_mint_load"
+echo "mintAll    $jid_mint_all"
+echo "Note: mintpy_all may show FAILED at final plotting even if main HDF5 products are created."
+```
+
+给它们执行权限：
+
+```bash
+chmod +x submit_01_geometry.sh submit_02_pairs.sh submit_03_ion_until_check.sh submit_04_ion_apply.sh submit_05_final_mintpy.sh
+```
+
+#### 0.6.3 自动 1：跑几何准备
+
+手动提交：
 
 ```bash
 bash submit_01_geometry.sh
 ```
 
-等跑完，检查：
+查看队列：
+
+```bash
+squeue -u panada
+```
+
+等全部结束后，手动检查：
 
 ```bash
 find dates -name cull.off | sort | wc -l
@@ -259,13 +421,24 @@ find dates_resampled -path "*/insar/*_az.off" -type f | wc -l
 find dates_resampled/CHANGE_REF_YYMMDD/insar -name "*lat*" -o -name "*lon*" -o -name "*hgt*" -o -name "*los*"
 ```
 
-确认没问题后：
+预期：
+
+```text
+cull.off 数量 = 非参考日期数量
+*_rg.off 数量 = 非参考日期数量
+*_az.off 数量 = 非参考日期数量
+参考日期 insar 目录下有 lat/lon/hgt/los/wbd
+```
+
+#### 0.6.4 自动 2：跑干涉图、多视、几何多视
+
+几何检查没问题后，手动提交：
 
 ```bash
 bash submit_02_pairs.sh
 ```
 
-等跑完，检查：
+等全部结束后，手动检查：
 
 ```bash
 find pairs -path "*/insar/*_8rlks_12alks.cor" -type f | wc -l
@@ -273,29 +446,84 @@ find pairs -path "*/insar/diff_*_8rlks_12alks.int" -type f | wc -l
 cat dates_resampled/CHANGE_REF_YYMMDD/insar/affine_transform.txt
 ```
 
-然后跑 ion 到检查图：
+预期：
+
+```text
+cor 数量 = pair 数量
+diff int 数量 = pair 数量
+affine_transform.txt 存在，RMS 不离谱
+```
+
+#### 0.6.5 自动 3：跑电离层到检查图
+
+干涉图检查没问题后，手动提交：
 
 ```bash
 bash submit_03_ion_until_check.sh
 ```
 
-等跑完，必须人工看：
+等全部结束后，必须人工看 `fig_ion`：
 
 ```bash
 find fig_ion -type f | sort
 ```
 
-如果 ion 图没有明显坏 pair：
+这里是人工节点。你要看每个 ion 图有没有严重长波条纹、明显异常 pair。
+
+如果有坏 pair：不要直接删结果，先修改 `run_ion_ls.slurm` 中用于 least squares 的 pair 列表，把坏 pair 排除。
+
+如果 ion 图可以接受，继续下一步。
+
+#### 0.6.6 自动 4：应用电离层校正
+
+手动提交：
 
 ```bash
 bash submit_04_ion_apply.sh
 ```
 
-最后：
+等结束后，手动检查：
+
+```bash
+find dates_ion -type f | sort | head
+find pairs -path "*/insar/diff_*_8rlks_12alks_ori.int" -type f | wc -l
+```
+
+预期：
+
+```text
+dates_ion 里有每个日期的 ion 文件
+每个 pair 的原始差分干涉图被备份为 *_ori.int
+```
+
+#### 0.6.7 自动 5：滤波、解缠、地理编码、MintPy
+
+手动提交：
 
 ```bash
 bash submit_05_final_mintpy.sh
 ```
+
+等结束后，手动检查：
+
+```bash
+find pairs -path "*/insar/filt_*_8rlks_12alks.int" -type f | wc -l
+find pairs -path "*/insar/filt_*_8rlks_12alks.unw" -type f | wc -l
+find pairs -path "*/insar/filt_*_8rlks_12alks_msk.unw" -type f | wc -l
+find pairs -path "*/insar/*_8rlks_12alks*.geo*" -type f | sort | head
+ls -lh mintpy/*.h5 mintpy/geo/*.h5 2>/dev/null
+```
+
+预期：
+
+```text
+filt int 数量 = pair 数量
+unw 数量 = pair 数量
+msk unw 数量 = pair 数量
+MintPy 生成 timeseries.h5 / velocity.h5 / geo/geo_timeseries.h5 / geo/geo_velocity.h5
+```
+
+注意：`mintpy/run_mintpy_all.slurm` 可能最后绘图报错导致 Slurm 显示 `FAILED`，但如果主要 `.h5` 都已经生成，科学结果可能已经成功。以 `ls -lh mintpy/*.h5 mintpy/geo/*.h5` 为准。
 
 <a id="step-0-7"></a>
 
