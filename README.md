@@ -185,6 +185,28 @@ cd /work/home/panada/insar/proc/alos2_stack_NEW
 nano retarget_project.sh
 ```
 
+主要更改的部分：
+```bash
+NEW_PROC="/work/home/panada/insar/proc/alos2_stack_NEW"
+
+NEW_REF="CHANGE_REF_YYMMDD"
+
+DATES=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_REF_YYMMDD CHANGE_YYMMDD_4)
+
+DATES2=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_YYMMDD_4)
+```
+
+例如
+```bash
+NEW_PROC="/work/home/panada/insar/proc/alos2_stack_NEW"
+
+NEW_REF="240401"
+
+DATES=(240101 240215 240401 240520 240705)
+
+DATES2=(240101 240215 240520 240705)
+```
+
 写入：
 
 ```bash
@@ -207,16 +229,49 @@ NEW_WBD="/work/home/panada/insar/data/dem/wbd_1_arcsec/asf_watermask_clip.wbd"
 OLD_REF="221221"
 NEW_REF="CHANGE_REF_YYMMDD"
 
+# 全部日期，必须按时间先后顺序写
 DATES=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_REF_YYMMDD CHANGE_YYMMDD_4)
-DATES2=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_YYMMDD_4)
-PAIRS=(CHANGE_YYMMDD_1-CHANGE_YYMMDD_2 CHANGE_YYMMDD_1-CHANGE_REF_YYMMDD CHANGE_REF_YYMMDD-CHANGE_YYMMDD_4)
 
+# 并发数
 PAIR_CONCURRENCY=8
 ION_CONCURRENCY=4
 DATE2_CONCURRENCY=3
 RESAMPLE_CONCURRENCY=2
 
 # ===== DO NOT EDIT BELOW unless needed =====
+
+# 自动生成非参考日期 DATES2
+DATES2=()
+for d in "${DATES[@]}"; do
+  if [[ "$d" != "$NEW_REF" ]]; then
+    DATES2+=("$d")
+  fi
+done
+
+# 自动生成所有两两组合 PAIRS
+PAIRS=()
+for ((i=0; i<${#DATES[@]}-1; i++)); do
+  for ((j=i+1; j<${#DATES[@]}; j++)); do
+    PAIRS+=("${DATES[i]}-${DATES[j]}")
+  done
+done
+
+echo "=== generated dates ==="
+printf 'DATES: '; printf '%s ' "${DATES[@]}"; echo
+printf 'DATES2: '; printf '%s ' "${DATES2[@]}"; echo
+printf 'PAIRS (%d): ' "${#PAIRS[@]}"; printf '%s ' "${PAIRS[@]}"; echo
+
+# 基本检查
+if [[ ${#DATES[@]} -lt 2 ]]; then
+  echo "ERROR: DATES 至少需要 2 个日期" >&2
+  exit 1
+fi
+
+if [[ ${#DATES2[@]} -ne $((${#DATES[@]} - 1)) ]]; then
+  echo "ERROR: NEW_REF=$NEW_REF 不在 DATES 中，或 DATES 有重复" >&2
+  exit 1
+fi
+
 files=$(find . -maxdepth 2 \( -name "*.slurm" -o -name "alosStack.xml" -o -name "alos2_noto.txt" -o -name "smallbaselineApp.cfg" \) | sort)
 
 date_block="${DATES[*]}"
@@ -268,9 +323,14 @@ done
 echo "=== old strings check ==="
 grep -R "$OLD_PROC\|$OLD_DATA\|$OLD_DEM\|$OLD_WBD\|$OLD_REF" -n -- *.slurm mintpy/*.slurm alosStack.xml mintpy/*.txt 2>/dev/null || true
 
+echo "=== CHANGE placeholder check ==="
+grep -R "CHANGE_" -n -- *.slurm mintpy/*.slurm alosStack.xml mintpy/*.txt 2>/dev/null || true
+
 echo "=== bash syntax check ==="
 bash -n *.slurm
 bash -n mintpy/*.slurm
+
+echo "=== done ==="
 ```
 
 运行：
