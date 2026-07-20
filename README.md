@@ -13,7 +13,7 @@
 - [0. 整体步骤介绍](#sec-0)
 - [1. 工程和数据准备](#sec-1)
   - [1.1 新区域需要改什么](#sec-1-1)
-  - [1.2 复制旧成功工程](#sec-1-2)
+  - [1.2 新建工程，只复制流程文件](#sec-1-2)
   - [1.3 准备新区域数据、DEM、water mask](#sec-1-3)
   - [1.4 一键替换旧工程参数](#sec-1-4)
   - [1.5 检查替换结果](#sec-1-5)
@@ -39,7 +39,7 @@
 完整流程是：
 
 ```text
-手动：复制旧成功工程，准备新数据/DEM/water mask
+手动：新建处理工程，只复制流程文件；data/DEM/water mask 目录可继续沿用
 手动：一键替换旧路径、旧日期、旧 pair，并检查
 手动：检查 alosStack.xml，重新 create_cmds.py
 
@@ -86,9 +86,9 @@ sbatch --dependency=afterok:上一步JOBID 下一步.slurm
 
 ```text
 NEW_PROC       新处理目录
-NEW_DATA       新 ALOS-2 数据目录
-NEW_DEM        新 DEM 文件
-NEW_WBD        新 water mask 文件，或设 None
+NEW_DATA       ALOS-2 数据目录；如果你继续用原目录，就保持旧路径不变
+NEW_DEM        DEM 文件；如果 DEM 仍覆盖新区域，就保持旧路径不变
+NEW_WBD        water mask 文件；如果仍覆盖新区域，就保持旧路径不变
 NEW_REF        新参考日期，YYMMDD 格式
 DATES          全部日期
 DATES2         非参考日期
@@ -112,22 +112,25 @@ ION_LOOKS = 64rlks_96alks
 
 <a id="sec-1-2"></a>
 
-### 1.2 复制旧成功工程
+### 1.2 新建工程，只复制流程文件
 
-不要直接改旧目录。先复制：
+不要直接改旧目录，也不建议 `cp -a` 复制整个旧 `proc`，因为会把 `dates_resampled/`、`pairs/`、`pairs_ion/`、MintPy `.h5` 等大结果一起复制过去。
+
+推荐只复制脚本、配置和文档：
 
 ```bash
-mkdir -p /work/home/panada/insar/proc/alos2_stack_NEW
-cd /work/home/panada/insar/proc/alos2_stack_NEW
+cd /work/home/panada/insar/proc
+mkdir -p alos2_stack_NEW
+cd alos2_stack_NEW
 
-cp /work/home/panada/insar/proc/alos2_stack/*.slurm ./
-cp /work/home/panada/insar/proc/alos2_stack/alosStack.xml ./
-cp /work/home/panada/insar/proc/alos2_stack/README.md ./ 2>/dev/null
+cp ../alos2_stack/*.slurm ./
+cp ../alos2_stack/alosStack.xml ./
+cp ../alos2_stack/*.md ./ 2>/dev/null
 
 mkdir -p mintpy
-cp /work/home/panada/insar/proc/alos2_stack/mintpy/*.slurm mintpy/
-cp /work/home/panada/insar/proc/alos2_stack/mintpy/*.txt mintpy/
-cp /work/home/panada/insar/proc/alos2_stack/mintpy/*.cfg mintpy/ 2>/dev/null
+cp ../alos2_stack/mintpy/*.slurm mintpy/
+cp ../alos2_stack/mintpy/*.txt mintpy/
+cp ../alos2_stack/mintpy/*.cfg mintpy/ 2>/dev/null
 ```
 
 确认 Slurm 文件还在：
@@ -138,36 +141,37 @@ find . -maxdepth 2 -name "*.slurm" | sort
 
 <a id="sec-1-3"></a>
 
-### 1.3 准备新区域数据、DEM、water mask
+### 1.3 准备或确认数据、DEM、water mask
 
-建议目录：
+如果你不想改数据目录，可以继续使用本次目录：
 
 ```bash
-/work/home/panada/insar/data/alos2_NEW
-/work/home/panada/insar/data/dem/NEW
+/work/home/panada/insar/data/alos2
+/work/home/panada/insar/data/dem/dem_aw3d30.dem.wgs84
+/work/home/panada/insar/data/dem/wbd_1_arcsec/asf_watermask_clip.wbd
 /work/home/panada/insar/proc/alos2_stack_NEW
 ```
 
-你需要准备：
+这时只需要确认这些数据覆盖新区域：
 
 ```text
-ALOS-2 数据：解压后每个日期目录里有 IMG / LED / VOL
-DEM：ISCE2 可读的 .dem.wgs84 + .xml + .vrt
-water mask：如果使用，需要 .wbd + .xml + .vrt
+ALOS-2 数据：新日期数据在 /work/home/panada/insar/data/alos2 里，并且解压/命名正确
+DEM：原 DEM 覆盖新区域，并且 .xml/.vrt 存在
+water mask：原 water mask 覆盖新区域，并且 .xml/.vrt 存在
 ```
 
 检查 DEM：
 
 ```bash
-ls -lh /work/home/panada/insar/data/dem/NEW/NEW.dem.wgs84*
-grep -A2 -n "FILE_NAME" /work/home/panada/insar/data/dem/NEW/NEW.dem.wgs84.xml
+ls -lh /work/home/panada/insar/data/dem/dem_aw3d30.dem.wgs84*
+grep -A2 -n "FILE_NAME" /work/home/panada/insar/data/dem/dem_aw3d30.dem.wgs84.xml
 ```
 
 检查 water mask：
 
 ```bash
-ls -lh /work/home/panada/insar/data/dem/NEW/NEW_watermask.wbd*
-grep -A2 -n "FILE_NAME" /work/home/panada/insar/data/dem/NEW/NEW_watermask.wbd.xml
+ls -lh /work/home/panada/insar/data/dem/wbd_1_arcsec/asf_watermask_clip.wbd*
+grep -A2 -n "FILE_NAME" /work/home/panada/insar/data/dem/wbd_1_arcsec/asf_watermask_clip.wbd.xml
 ```
 
 <a id="sec-1-4"></a>
@@ -192,13 +196,13 @@ OLD_PROC="/work/home/panada/insar/proc/alos2_stack"
 NEW_PROC="/work/home/panada/insar/proc/alos2_stack_NEW"
 
 OLD_DATA="/work/home/panada/insar/data/alos2"
-NEW_DATA="/work/home/panada/insar/data/alos2_NEW"
+NEW_DATA="/work/home/panada/insar/data/alos2"
 
 OLD_DEM="/work/home/panada/insar/data/dem/dem_aw3d30.dem.wgs84"
-NEW_DEM="/work/home/panada/insar/data/dem/NEW/NEW.dem.wgs84"
+NEW_DEM="/work/home/panada/insar/data/dem/dem_aw3d30.dem.wgs84"
 
 OLD_WBD="/work/home/panada/insar/data/dem/wbd_1_arcsec/asf_watermask_clip.wbd"
-NEW_WBD="/work/home/panada/insar/data/dem/NEW/NEW_watermask.wbd"
+NEW_WBD="/work/home/panada/insar/data/dem/wbd_1_arcsec/asf_watermask_clip.wbd"
 
 OLD_REF="221221"
 NEW_REF="CHANGE_REF_YYMMDD"
@@ -289,7 +293,8 @@ grep -R "/work/home/panada/insar/proc/alos2_stack\|221221\|220316\|220413\|23031
 看法：
 
 ```text
-旧处理目录、旧 DEM、旧 water mask 还出现：必须改
+旧处理目录还出现：必须改
+旧 DEM、旧 water mask 还出现：如果你本来就继续使用原 DEM/WBD，可以保留
 旧日期还出现：如果新区域不是同一天，必须改
 新区域刚好同日期：可以保留
 ```
@@ -314,9 +319,9 @@ grep -n "data directory\|dem for coregistration\|dem for geocoding\|water body\|
 确认：
 
 ```text
-data directory      新 ALOS-2 数据目录
-dem for coregistration / geocoding   新 DEM
-water body          新 water mask，或 None
+data directory      ALOS-2 数据目录；如果不改数据目录，就仍是 /work/home/panada/insar/data/alos2
+dem for coregistration / geocoding   DEM；如果不改 DEM，就仍是 dem_aw3d30.dem.wgs84
+water body          water mask；如果不改，就仍是 asf_watermask_clip.wbd
 reference date      新参考日期
 use water body to dertermine number of matching offsets   None
 ```
