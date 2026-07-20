@@ -117,9 +117,17 @@ ION_LOOKS = 64rlks_96alks
 不要直接改旧目录。先复制：
 
 ```bash
-cd /work/home/panada/insar/proc
-cp -a alos2_stack alos2_stack_NEW
-cd alos2_stack_NEW
+mkdir -p /work/home/panada/insar/proc/alos2_stack_NEW
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+cp /work/home/panada/insar/proc/alos2_stack/*.slurm ./
+cp /work/home/panada/insar/proc/alos2_stack/alosStack.xml ./
+cp /work/home/panada/insar/proc/alos2_stack/README.md ./ 2>/dev/null
+
+mkdir -p mintpy
+cp /work/home/panada/insar/proc/alos2_stack/mintpy/*.slurm mintpy/
+cp /work/home/panada/insar/proc/alos2_stack/mintpy/*.txt mintpy/
+cp /work/home/panada/insar/proc/alos2_stack/mintpy/*.cfg mintpy/ 2>/dev/null
 ```
 
 确认 Slurm 文件还在：
