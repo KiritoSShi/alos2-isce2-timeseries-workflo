@@ -619,178 +619,63 @@ cull.off 数量 = 非参考日期数量
 意义：
 
 ```text
-形成 pair 干涉图，做 mosaic，估计 radar/DEM affine，修正 range offset，生成差分干涉图和相干性。
+把 dates/ 和 dates_resampled/ 组织成 pairs/，形成干涉图，做 mosaic，估计 radar/DEM affine，修正 range offset，生成差分干涉图和相干性。
 ```
 
-包含的 Slurm：
-
-```text
-run_form_array.slurm
-run_mosaic_array.slurm
-run_radar_dem_offset.slurm
-run_rect_range_offset.slurm
-run_diff_array.slurm
-run_look_array.slurm
-run_look_geom.slurm
-```
-
-先判断 pair 数：
-
-```bash
-cd /work/home/panada/insar/proc/alos2_stack_NEW
-grep -o "[0-9]\{6\}-[0-9]\{6\}" run_form_array.slurm | sort -u | wc -l
-```
-
-你的 `wzhctest` 当前报过：
-
-```text
-qos max submit job limit exceeded 20
-```
-
-这表示队列里同一时刻最多存在 20 个 array task。注意：`#SBATCH --array=0-20%8` 虽然最多同时跑 8 个，但它仍然提交了 21 个 array task，会被拒绝。
-
-如果 pair 数不超过 20，可以使用下面的 `submit_02_pairs.sh` 一次性自动连跑。
-
-如果 pair 数超过 20，比如 7 个日期的全组合是 21 个 pair，不要直接运行 `submit_02_pairs.sh`，也不要同时提交两批。要每一步分批跑：先跑 `0-19%8`，等完成后再跑 `20-20%1`。这样每批仍然最多同时 8 个并行，但不会超过 20 个提交名额。
-
-先确认 pair 列表和目录：
+进入 2.4 前必须先通过 2.3 硬检查：
 
 ```bash
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
-grep -R "230301\|230550" -n -- run_form_array.slurm run_mosaic_array.slurm run_diff_array.slurm run_look_array.slurm
-
-pairs_all=$(grep -n "^insarpair=" run_form_array.slurm | sed 's/.*insarpair=(//; s/).*//')
-mkdir -p pairs
-for p in $pairs_all; do
-  mkdir -p "pairs/$p"
-done
-
-echo "$pairs_all" | wc -w
-find pairs -maxdepth 1 -type d | sort | wc -l
+find dates_resampled -path "*/s1/*.slc" -type f | wc -l
+find dates_resampled -path "*/insar/*_rg.off" -type f | wc -l
+find dates_resampled -path "*/insar/*_az.off" -type f | wc -l
+find dates_resampled/230127/insar -name "*lat*" -o -name "*lon*" -o -name "*hgt*" -o -name "*los*"
 ```
 
-预期：
+只有 `dates_resampled` 存在，并且 `rg.off / az.off / lat / lon / hgt / los` 都存在，才能进入 2.4。
+
+2.4 的正确顺序：
+
+| 顺序 | 步骤 | 脚本 / 命令 | 自动/手动 | 作用 | 检查 |
+|---|---|---|---|---|---|
+| 2.4.1 | pair up | `pair_up.py` | 自动前置 | 把 `dates/` 和 `dates_resampled/` 按 pair 组织到 `pairs/日期-日期/`，生成 `f1_0740/s1/*.slc` | `find pairs -path "*/f1_0740/*" -type f \| wc -l` 应大于 0 |
+| 2.4.2 | form interferogram | `run_form_array.slurm` | 自动，按 pair | 形成每个 pair 的初始干涉图和振幅图 | `find pairs -path "*/f1_0740/*" -type f \| grep -E "\.int$\|\.amp$" \| wc -l` = pair 数 × 2 |
+| 2.4.3 | mosaic interferogram | `run_mosaic_array.slurm` | 自动，按 pair | 把 frame/swath 干涉图整理到 pair 的 `insar/` 目录 | `find pairs -path "*/insar/*_2rlks_3alks.int" -type f \| wc -l` = pair 数 |
+| 2.4.4 | radar DEM offset | `run_radar_dem_offset.slurm` | 自动，单任务 | 估计雷达坐标和 DEM 几何之间的 affine 关系 | `cat dates_resampled/230127/insar/affine_transform.txt` |
+| 2.4.5 | rectify range offset | `run_rect_range_offset.slurm` | 自动，按 dates2，不是按 pair | 用 affine 修正每个非参考日期的 range offset | `find dates_resampled -path "*/insar/*_rg_rect.off" -type f \| wc -l` = dates2 数 |
+| 2.4.6 | diff interferogram | `run_diff_array.slurm` | 自动，按 pair | 生成差分干涉图 | `find pairs -path "*/insar/diff_*_8rlks_12alks.int" -type f \| wc -l` = pair 数 |
+| 2.4.7 | look/coherence | `run_look_array.slurm` | 自动，按 pair | 多视并生成相干性 | `find pairs -path "*/insar/*_8rlks_12alks.cor" -type f \| wc -l` = pair 数 |
+| 2.4.8 | look geometry | `run_look_geom.slurm` | 自动，单任务 | 把 lat/lon/hgt/los/wbd 多视到 8rlks/12alks | `ls dates_resampled/230127/insar/230127_8rlks_12alks.{lat,lon,hgt,los,wbd}` |
+
+Slurm 限制规则：
 
 ```text
-grep 错日期没有输出
-pairs_all 数量 = pair 数量
-find pairs 数量 = pair 数量 + 1
+wzhctest 当前出现过 QOSMaxSubmitJobPerUserLimit，约等于同一时刻最多 20 个提交任务。
+#SBATCH --array=0-20%8 虽然最多同时跑 8 个，但仍然一次提交 21 个 array task，会被拒绝。
+凡是 array 任务数大于 19，都要分块提交：0-18，然后 19-最后。
 ```
 
-对你现在 21 个 pair，预期是：
-
-```text
-21
-22
-```
-
-然后按下面顺序跑。
-
-第一步，form 第一批：
+手动先跑 `pair_up.py`：
 
 ```bash
-jid_form_a=$(sbatch --parsable --array=0-19%8 run_form_array.slurm)
-echo "form_a $jid_form_a"
-squeue -u panada
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+/work/home/panada/isce/isce2-main/contrib/stack/alosStack/pair_up.py \
+  -idir1 dates \
+  -idir2 dates_resampled \
+  -odir pairs \
+  -ref_date 230127 \
+  -pairs 220114-221118 220114-221230 220114-230127 220114-230310 220114-230421 220114-230505 221118-221230 221118-230127 221118-230310 221118-230421 221118-230505 221230-230127 221230-230310 221230-230421 221230-230505 230127-230310 230127-230421 230127-230505 230310-230421 230310-230505 230421-230505
+
+find pairs/220114-221118 -maxdepth 5 -type f -o -type l | sort | head -120
+find pairs -path "*/f1_0740/*" -type f | wc -l
 ```
 
-等 `squeue -u panada` 里没有这批任务后检查：
+确认 `pairs/*/f1_0740/s1/*.slc` 出现后，再创建自动脚本，从 form 跑到 look_geom：
 
 ```bash
-sacct -j "$jid_form_a" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
-for f in alos_form_${jid_form_a}_*.err; do echo "===== $f ====="; tail -n 30 "$f"; done
-```
-
-如果成功，form 第二批：
-
-```bash
-jid_form_b=$(sbatch --parsable --array=20-20%1 run_form_array.slurm)
-echo "form_b $jid_form_b"
-squeue -u panada
-```
-
-等完成后检查：
-
-```bash
-sacct -j "$jid_form_b" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
-for f in alos_form_${jid_form_b}_*.err; do echo "===== $f ====="; tail -n 30 "$f"; done
-```
-
-mosaic 也按两批：
-
-```bash
-jid_mosaic_a=$(sbatch --parsable --array=0-19%8 run_mosaic_array.slurm)
-echo "mosaic_a $jid_mosaic_a"
-```
-
-等完成并检查成功后：
-
-```bash
-jid_mosaic_b=$(sbatch --parsable --array=20-20%1 run_mosaic_array.slurm)
-echo "mosaic_b $jid_mosaic_b"
-```
-
-mosaic 两批完成后，跑 radar/DEM offset：
-
-```bash
-jid_rdrdem=$(sbatch --parsable run_radar_dem_offset.slurm)
-echo "rdrdem $jid_rdrdem"
-```
-
-等 `rdrdem` 完成后，rect range offset 也按两批：
-
-```bash
-jid_rect_a=$(sbatch --parsable --array=0-19%8 run_rect_range_offset.slurm)
-echo "rect_a $jid_rect_a"
-```
-
-等完成并检查成功后：
-
-```bash
-jid_rect_b=$(sbatch --parsable --array=20-20%1 run_rect_range_offset.slurm)
-echo "rect_b $jid_rect_b"
-```
-
-diff 也按两批：
-
-```bash
-jid_diff_a=$(sbatch --parsable --array=0-19%8 run_diff_array.slurm)
-echo "diff_a $jid_diff_a"
-```
-
-等完成并检查成功后：
-
-```bash
-jid_diff_b=$(sbatch --parsable --array=20-20%1 run_diff_array.slurm)
-echo "diff_b $jid_diff_b"
-```
-
-look/coherence 也按两批：
-
-```bash
-jid_look_a=$(sbatch --parsable --array=0-19%8 run_look_array.slurm)
-echo "look_a $jid_look_a"
-```
-
-等完成并检查成功后：
-
-```bash
-jid_look_b=$(sbatch --parsable --array=20-20%1 run_look_array.slurm)
-echo "look_b $jid_look_b"
-```
-
-最后跑几何多视：
-
-```bash
-jid_geom=$(sbatch --parsable run_look_geom.slurm)
-echo "look_geom $jid_geom"
-```
-
-pair 数不超过 20 时，可以手动创建自动提交脚本：
-
-```bash
-nano submit_02_pairs.sh
+nano submit_02_pairs_chunked.sh
 ```
 
 写入：
@@ -801,48 +686,142 @@ set -euo pipefail
 
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
-jid_form=$(sbatch --parsable run_form_array.slurm)
-jid_mosaic=$(sbatch --parsable --dependency=afterok:$jid_form run_mosaic_array.slurm)
-jid_rdrdem=$(sbatch --parsable --dependency=afterok:$jid_mosaic run_radar_dem_offset.slurm)
-jid_rect=$(sbatch --parsable --dependency=afterok:$jid_rdrdem run_rect_range_offset.slurm)
-jid_diff=$(sbatch --parsable --dependency=afterok:$jid_rect run_diff_array.slurm)
-jid_look=$(sbatch --parsable --dependency=afterok:$jid_diff run_look_array.slurm)
-jid_geom=$(sbatch --parsable --dependency=afterok:$jid_look run_look_geom.slurm)
+PAIR_CHUNK_SIZE=19
+PAIR_MAX_RUNNING=8
+DATE_MAX_RUNNING=3
+QOS_WAIT=90
 
-echo "form      $jid_form"
-echo "mosaic    $jid_mosaic"
-echo "rdrdem    $jid_rdrdem"
-echo "rect      $jid_rect"
-echo "diff      $jid_diff"
-echo "look      $jid_look"
-echo "lookgeom  $jid_geom"
+get_count_from_array () {
+  local file=$1
+  local name=$2
+  grep "^${name}=" "$file" | sed 's/.*=(//; s/).*//' | wc -w
+}
+
+wait_job () {
+  local jid=$1
+  local label=$2
+
+  echo "waiting $label $jid"
+
+  while squeue -j "$jid" -h | grep -q .; do
+    sleep 30
+  done
+
+  sacct -j "$jid" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+
+  if sacct -j "$jid" --format=State -n | grep -E "FAILED|CANCELLED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL" >/dev/null; then
+    echo "ERROR: $label failed: $jid"
+    exit 1
+  fi
+
+  echo "wait ${QOS_WAIT}s for QOS submit quota release"
+  sleep "$QOS_WAIT"
+}
+
+submit_pair_chunks () {
+  local script=$1
+  local label=$2
+
+  local pair_count
+  pair_count=$(get_count_from_array "$script" insarpair)
+  local last_index=$((pair_count - 1))
+
+  echo "=== $label ==="
+  echo "PAIR_COUNT=$pair_count LAST_INDEX=$last_index"
+
+  local start=0
+  while [ "$start" -le "$last_index" ]; do
+    local end=$((start + PAIR_CHUNK_SIZE - 1))
+    [ "$end" -gt "$last_index" ] && end="$last_index"
+
+    local n=$((end - start + 1))
+    local conc="$PAIR_MAX_RUNNING"
+    [ "$n" -lt "$conc" ] && conc="$n"
+
+    local jid
+    jid=$(sbatch --parsable --array=${start}-${end}%${conc} "$script")
+    echo "$label ${start}-${end}%${conc} $jid"
+    wait_job "$jid" "$label ${start}-${end}%${conc}"
+
+    start=$((end + 1))
+  done
+}
+
+submit_dates2_array () {
+  local script=$1
+  local label=$2
+
+  local date_count
+  date_count=$(get_count_from_array "$script" dates2)
+  local last_index=$((date_count - 1))
+
+  echo "=== $label ==="
+  echo "DATES2_COUNT=$date_count LAST_INDEX=$last_index"
+
+  local conc="$DATE_MAX_RUNNING"
+  [ "$date_count" -lt "$conc" ] && conc="$date_count"
+
+  local jid
+  jid=$(sbatch --parsable --array=0-${last_index}%${conc} "$script")
+  echo "$label 0-${last_index}%${conc} $jid"
+  wait_job "$jid" "$label"
+}
+
+submit_pair_chunks run_form_array.slurm form
+submit_pair_chunks run_mosaic_array.slurm mosaic
+
+echo "=== radar dem offset ==="
+jid_rdrdem=$(sbatch --parsable run_radar_dem_offset.slurm)
+echo "rdrdem $jid_rdrdem"
+wait_job "$jid_rdrdem" rdrdem
+
+submit_dates2_array run_rect_range_offset.slurm rect
+submit_pair_chunks run_diff_array.slurm diff
+submit_pair_chunks run_look_array.slurm look
+
+echo "=== look geom ==="
+jid_geom=$(sbatch --parsable run_look_geom.slurm)
+echo "lookgeom $jid_geom"
+wait_job "$jid_geom" lookgeom
+
+echo "=== submit_02_pairs_chunked done ==="
+date
 ```
 
-自动运行：
+运行：
 
 ```bash
-bash submit_02_pairs.sh
-squeue -u panada
+chmod +x submit_02_pairs_chunked.sh
+bash -n submit_02_pairs_chunked.sh
+nohup bash submit_02_pairs_chunked.sh > submit_02_pairs_chunked.log 2>&1 &
+tail -f submit_02_pairs_chunked.log
 ```
 
-手动检查：
+2.4 完成后检查：
 
 ```bash
-find pairs -path "*/insar/*_8rlks_12alks.cor" -type f | wc -l
+find pairs -path "*/insar/*_2rlks_3alks.int" -type f | wc -l
+find pairs -path "*/insar/*_2rlks_3alks.amp" -type f | wc -l
+find dates_resampled -path "*/insar/*_rg_rect.off" -type f | wc -l
 find pairs -path "*/insar/diff_*_8rlks_12alks.int" -type f | wc -l
-cat dates_resampled/CHANGE_REF_YYMMDD/insar/affine_transform.txt
+find pairs -path "*/insar/*_8rlks_12alks.cor" -type f | wc -l
+cat dates_resampled/230127/insar/affine_transform.txt
+ls -lh dates_resampled/230127/insar/230127_8rlks_12alks.{lat,lon,hgt,los,wbd}
 ```
 
 预期：
 
 ```text
-cor 数量 = pair 数量
-diff int 数量 = pair 数量
-affine_transform.txt 存在，RMS 不离谱
+2rlks int = pair 数
+2rlks amp = pair 数
+rg_rect.off = dates2 数
+8rlks diff int = pair 数
+8rlks cor = pair 数
+affine_transform.txt 存在
+230127_8rlks_12alks lat/lon/hgt/los/wbd 都存在
 ```
 
 <a id="sec-2-5"></a>
-```
 
 ### 2.5 阶段 3：电离层到检查图
 
@@ -852,7 +831,7 @@ affine_transform.txt 存在，RMS 不离谱
 准备 pairs_ion，计算每个 pair 的电离层相位，并生成 fig_ion 检查图。
 ```
 
-自动连跑的 Slurm：
+正确顺序：
 
 ```text
 run_ion_pairup.slurm
@@ -863,10 +842,12 @@ run_ion_cal_array.slurm
 run_ion_check.slurm
 ```
 
-手动创建提交脚本：
+注意：`run_ion_pairup.slurm` 是单任务；后面 `run_ion_*_array.slurm` 如果是 21 个 pair，必须分块提交，不能一次 `0-20%4`。
+
+创建自动分块脚本：
 
 ```bash
-nano submit_03_ion_until_check.sh
+nano submit_03_ion_until_check_chunked.sh
 ```
 
 写入：
@@ -877,36 +858,99 @@ set -euo pipefail
 
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
-jid_pairup=$(sbatch --parsable run_ion_pairup.slurm)
-jid_unwrap=$(sbatch --parsable --dependency=afterok:$jid_pairup run_ion_unwrap_array.slurm)
-jid_filt=$(sbatch --parsable --dependency=afterok:$jid_unwrap run_ion_filt_array.slurm)
-jid_prep=$(sbatch --parsable --dependency=afterok:$jid_filt run_ion_prep_array.slurm)
-jid_cal=$(sbatch --parsable --dependency=afterok:$jid_prep run_ion_cal_array.slurm)
-jid_check=$(sbatch --parsable --dependency=afterok:$jid_cal run_ion_check.slurm)
+PAIR_CHUNK_SIZE=19
+ION_MAX_RUNNING=4
+QOS_WAIT=90
 
+get_ion_count () {
+  grep "^ionpair=" "$1" | sed 's/.*=(//; s/).*//' | wc -w
+}
+
+wait_job () {
+  local jid=$1
+  local label=$2
+
+  echo "waiting $label $jid"
+
+  while squeue -j "$jid" -h | grep -q .; do
+    sleep 30
+  done
+
+  sacct -j "$jid" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+
+  if sacct -j "$jid" --format=State -n | grep -E "FAILED|CANCELLED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL" >/dev/null; then
+    echo "ERROR: $label failed: $jid"
+    exit 1
+  fi
+
+  echo "wait ${QOS_WAIT}s for QOS submit quota release"
+  sleep "$QOS_WAIT"
+}
+
+submit_ion_chunks () {
+  local script=$1
+  local label=$2
+
+  local pair_count
+  pair_count=$(get_ion_count "$script")
+  local last_index=$((pair_count - 1))
+
+  echo "=== $label ==="
+  echo "ION_PAIR_COUNT=$pair_count LAST_INDEX=$last_index"
+
+  local start=0
+  while [ "$start" -le "$last_index" ]; do
+    local end=$((start + PAIR_CHUNK_SIZE - 1))
+    [ "$end" -gt "$last_index" ] && end="$last_index"
+
+    local n=$((end - start + 1))
+    local conc="$ION_MAX_RUNNING"
+    [ "$n" -lt "$conc" ] && conc="$n"
+
+    local jid
+    jid=$(sbatch --parsable --array=${start}-${end}%${conc} "$script")
+    echo "$label ${start}-${end}%${conc} $jid"
+    wait_job "$jid" "$label ${start}-${end}%${conc}"
+
+    start=$((end + 1))
+  done
+}
+
+echo "=== ion pairup ==="
+jid_pairup=$(sbatch --parsable run_ion_pairup.slurm)
 echo "ion_pairup $jid_pairup"
-echo "ion_unwrap $jid_unwrap"
-echo "ion_filt   $jid_filt"
-echo "ion_prep   $jid_prep"
-echo "ion_cal    $jid_cal"
-echo "ion_check  $jid_check"
-echo "STOP after ion_check: inspect fig_ion/*.tif manually."
+wait_job "$jid_pairup" ion_pairup
+
+submit_ion_chunks run_ion_unwrap_array.slurm ion_unwrap
+submit_ion_chunks run_ion_filt_array.slurm ion_filt
+submit_ion_chunks run_ion_prep_array.slurm ion_prep
+submit_ion_chunks run_ion_cal_array.slurm ion_cal
+
+echo "=== ion check ==="
+jid_check=$(sbatch --parsable run_ion_check.slurm)
+echo "ion_check $jid_check"
+wait_job "$jid_check" ion_check
+
+echo "=== STOP: inspect fig_ion manually ==="
+date
 ```
 
-自动运行：
+运行：
 
 ```bash
-bash submit_03_ion_until_check.sh
-squeue -u panada
+chmod +x submit_03_ion_until_check_chunked.sh
+bash -n submit_03_ion_until_check_chunked.sh
+nohup bash submit_03_ion_until_check_chunked.sh > submit_03_ion_until_check_chunked.log 2>&1 &
+tail -f submit_03_ion_until_check_chunked.log
 ```
 
-手动检查：
+人工检查：
 
 ```bash
 find fig_ion -type f | sort
 ```
 
-这里必须人工看图。判断每个 pair 是否有严重长波条纹或明显异常。
+这里必须人工看图，判断每个 pair 是否有严重长波条纹或明显异常。
 
 如果有坏 pair：
 
@@ -927,17 +971,19 @@ find fig_ion -type f | sort
 用筛选后的 ion pair 反演各日期 ion，并应用回 pairs 下的差分干涉图。
 ```
 
-自动连跑的 Slurm：
+正确顺序：
 
 ```text
 run_ion_ls.slurm
 run_ion_correct_array.slurm
 ```
 
-手动创建提交脚本：
+`run_ion_ls.slurm` 是单任务；`run_ion_correct_array.slurm` 按 pair 跑，如果 pair 数超过 19，也要分块提交。
+
+创建自动脚本：
 
 ```bash
-nano submit_04_ion_apply.sh
+nano submit_04_ion_apply_chunked.sh
 ```
 
 写入：
@@ -948,21 +994,84 @@ set -euo pipefail
 
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
-jid_ls=$(sbatch --parsable run_ion_ls.slurm)
-jid_correct=$(sbatch --parsable --dependency=afterok:$jid_ls run_ion_correct_array.slurm)
+PAIR_CHUNK_SIZE=19
+ION_MAX_RUNNING=4
+QOS_WAIT=90
 
-echo "ion_ls      $jid_ls"
-echo "ion_correct $jid_correct"
+get_ion_count () {
+  grep "^ionpair=" "$1" | sed 's/.*=(//; s/).*//' | wc -w
+}
+
+wait_job () {
+  local jid=$1
+  local label=$2
+
+  echo "waiting $label $jid"
+
+  while squeue -j "$jid" -h | grep -q .; do
+    sleep 30
+  done
+
+  sacct -j "$jid" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+
+  if sacct -j "$jid" --format=State -n | grep -E "FAILED|CANCELLED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL" >/dev/null; then
+    echo "ERROR: $label failed: $jid"
+    exit 1
+  fi
+
+  echo "wait ${QOS_WAIT}s for QOS submit quota release"
+  sleep "$QOS_WAIT"
+}
+
+submit_correct_chunks () {
+  local script=run_ion_correct_array.slurm
+  local label=ion_correct
+  local pair_count
+  pair_count=$(get_ion_count "$script")
+  local last_index=$((pair_count - 1))
+
+  echo "=== $label ==="
+  echo "ION_PAIR_COUNT=$pair_count LAST_INDEX=$last_index"
+
+  local start=0
+  while [ "$start" -le "$last_index" ]; do
+    local end=$((start + PAIR_CHUNK_SIZE - 1))
+    [ "$end" -gt "$last_index" ] && end="$last_index"
+
+    local n=$((end - start + 1))
+    local conc="$ION_MAX_RUNNING"
+    [ "$n" -lt "$conc" ] && conc="$n"
+
+    local jid
+    jid=$(sbatch --parsable --array=${start}-${end}%${conc} "$script")
+    echo "$label ${start}-${end}%${conc} $jid"
+    wait_job "$jid" "$label ${start}-${end}%${conc}"
+
+    start=$((end + 1))
+  done
+}
+
+echo "=== ion least squares ==="
+jid_ls=$(sbatch --parsable run_ion_ls.slurm)
+echo "ion_ls $jid_ls"
+wait_job "$jid_ls" ion_ls
+
+submit_correct_chunks
+
+echo "=== submit_04_ion_apply done ==="
+date
 ```
 
-自动运行：
+运行：
 
 ```bash
-bash submit_04_ion_apply.sh
-squeue -u panada
+chmod +x submit_04_ion_apply_chunked.sh
+bash -n submit_04_ion_apply_chunked.sh
+nohup bash submit_04_ion_apply_chunked.sh > submit_04_ion_apply_chunked.log 2>&1 &
+tail -f submit_04_ion_apply_chunked.log
 ```
 
-手动检查：
+检查：
 
 ```bash
 find dates_ion -type f | sort | head
@@ -986,7 +1095,7 @@ dates_ion 里有每个日期的 ion 文件
 滤波、SNAPHU 解缠、地理编码，然后进入 MintPy 时序反演和速度场输出。
 ```
 
-自动连跑的 Slurm：
+正确顺序：
 
 ```text
 run_filt_array.slurm
@@ -997,10 +1106,12 @@ mintpy/run_mintpy_load.slurm
 mintpy/run_mintpy_all.slurm
 ```
 
-手动创建提交脚本：
+`run_filt_array.slurm / run_unwrap_array.slurm / run_geocode_array.slurm` 都按 pair 跑。如果 pair 数超过 19，必须分块提交。`run_geocode_los.slurm` 和 MintPy 两个脚本是单任务。
+
+创建自动脚本：
 
 ```bash
-nano submit_05_final_mintpy.sh
+nano submit_05_final_mintpy_chunked.sh
 ```
 
 写入：
@@ -1011,30 +1122,97 @@ set -euo pipefail
 
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
-jid_filt=$(sbatch --parsable run_filt_array.slurm)
-jid_unwrap=$(sbatch --parsable --dependency=afterok:$jid_filt run_unwrap_array.slurm)
-jid_geocode=$(sbatch --parsable --dependency=afterok:$jid_unwrap run_geocode_array.slurm)
-jid_los=$(sbatch --parsable --dependency=afterok:$jid_geocode run_geocode_los.slurm)
-jid_mint_load=$(sbatch --parsable --dependency=afterok:$jid_los mintpy/run_mintpy_load.slurm)
-jid_mint_all=$(sbatch --parsable --dependency=afterok:$jid_mint_load mintpy/run_mintpy_all.slurm)
+PAIR_CHUNK_SIZE=19
+PAIR_MAX_RUNNING=8
+QOS_WAIT=90
 
-echo "filt       $jid_filt"
-echo "unwrap     $jid_unwrap"
-echo "geocode    $jid_geocode"
-echo "geocodeLOS $jid_los"
-echo "mintLoad   $jid_mint_load"
-echo "mintAll    $jid_mint_all"
-echo "Note: mintpy_all may show FAILED at final plotting even if main HDF5 products are created."
+get_pair_count () {
+  grep "^insarpair=" "$1" | sed 's/.*=(//; s/).*//' | wc -w
+}
+
+wait_job () {
+  local jid=$1
+  local label=$2
+
+  echo "waiting $label $jid"
+
+  while squeue -j "$jid" -h | grep -q .; do
+    sleep 30
+  done
+
+  sacct -j "$jid" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+
+  if sacct -j "$jid" --format=State -n | grep -E "FAILED|CANCELLED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL" >/dev/null; then
+    echo "ERROR: $label failed: $jid"
+    exit 1
+  fi
+
+  echo "wait ${QOS_WAIT}s for QOS submit quota release"
+  sleep "$QOS_WAIT"
+}
+
+submit_pair_chunks () {
+  local script=$1
+  local label=$2
+
+  local pair_count
+  pair_count=$(get_pair_count "$script")
+  local last_index=$((pair_count - 1))
+
+  echo "=== $label ==="
+  echo "PAIR_COUNT=$pair_count LAST_INDEX=$last_index"
+
+  local start=0
+  while [ "$start" -le "$last_index" ]; do
+    local end=$((start + PAIR_CHUNK_SIZE - 1))
+    [ "$end" -gt "$last_index" ] && end="$last_index"
+
+    local n=$((end - start + 1))
+    local conc="$PAIR_MAX_RUNNING"
+    [ "$n" -lt "$conc" ] && conc="$n"
+
+    local jid
+    jid=$(sbatch --parsable --array=${start}-${end}%${conc} "$script")
+    echo "$label ${start}-${end}%${conc} $jid"
+    wait_job "$jid" "$label ${start}-${end}%${conc}"
+
+    start=$((end + 1))
+  done
+}
+
+submit_pair_chunks run_filt_array.slurm filt
+submit_pair_chunks run_unwrap_array.slurm unwrap
+submit_pair_chunks run_geocode_array.slurm geocode
+
+echo "=== geocode los ==="
+jid_los=$(sbatch --parsable run_geocode_los.slurm)
+echo "geocode_los $jid_los"
+wait_job "$jid_los" geocode_los
+
+echo "=== mintpy load ==="
+jid_mint_load=$(sbatch --parsable mintpy/run_mintpy_load.slurm)
+echo "mintpy_load $jid_mint_load"
+wait_job "$jid_mint_load" mintpy_load
+
+echo "=== mintpy all ==="
+jid_mint_all=$(sbatch --parsable mintpy/run_mintpy_all.slurm)
+echo "mintpy_all $jid_mint_all"
+wait_job "$jid_mint_all" mintpy_all
+
+echo "=== submit_05_final_mintpy done ==="
+date
 ```
 
-自动运行：
+运行：
 
 ```bash
-bash submit_05_final_mintpy.sh
-squeue -u panada
+chmod +x submit_05_final_mintpy_chunked.sh
+bash -n submit_05_final_mintpy_chunked.sh
+nohup bash submit_05_final_mintpy_chunked.sh > submit_05_final_mintpy_chunked.log 2>&1 &
+tail -f submit_05_final_mintpy_chunked.log
 ```
 
-手动检查：
+检查：
 
 ```bash
 find pairs -path "*/insar/filt_*_8rlks_12alks.int" -type f | wc -l
@@ -1054,7 +1232,6 @@ MintPy 生成 timeseries.h5 / velocity.h5 / geo/geo_timeseries.h5 / geo/geo_velo
 ```
 
 注意：`mintpy/run_mintpy_all.slurm` 可能最后绘图报错导致 Slurm 显示 `FAILED`。如果主要 `.h5` 已经生成，科学结果可能已经成功。
-
 <a id="sec-3"></a>
 
 ## 3. 其它说明
