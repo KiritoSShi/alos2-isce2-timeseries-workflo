@@ -640,10 +640,156 @@ cd /work/home/panada/insar/proc/alos2_stack_NEW
 grep -o "[0-9]\{6\}-[0-9]\{6\}" run_form_array.slurm | sort -u | wc -l
 ```
 
-如果 pair 数超过 20，比如 21 个 pair，用分批并行提交脚本：
+你的 `wzhctest` 当前报过：
+
+```text
+qos max submit job limit exceeded 20
+```
+
+这表示队列里同一时刻最多存在 20 个 array task。注意：`#SBATCH --array=0-20%8` 虽然最多同时跑 8 个，但它仍然提交了 21 个 array task，会被拒绝。
+
+如果 pair 数不超过 20，可以使用下面的 `submit_02_pairs.sh` 一次性自动连跑。
+
+如果 pair 数超过 20，比如 7 个日期的全组合是 21 个 pair，不要直接运行 `submit_02_pairs.sh`，也不要同时提交两批。要每一步分批跑：先跑 `0-19%8`，等完成后再跑 `20-20%1`。这样每批仍然最多同时 8 个并行，但不会超过 20 个提交名额。
+
+先确认 pair 列表和目录：
 
 ```bash
-nano submit_02_pairs_batch.sh
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+grep -R "230301\|230550" -n -- run_form_array.slurm run_mosaic_array.slurm run_diff_array.slurm run_look_array.slurm
+
+pairs_all=$(grep -n "^insarpair=" run_form_array.slurm | sed 's/.*insarpair=(//; s/).*//')
+mkdir -p pairs
+for p in $pairs_all; do
+  mkdir -p "pairs/$p"
+done
+
+echo "$pairs_all" | wc -w
+find pairs -maxdepth 1 -type d | sort | wc -l
+```
+
+预期：
+
+```text
+grep 错日期没有输出
+pairs_all 数量 = pair 数量
+find pairs 数量 = pair 数量 + 1
+```
+
+对你现在 21 个 pair，预期是：
+
+```text
+21
+22
+```
+
+然后按下面顺序跑。
+
+第一步，form 第一批：
+
+```bash
+jid_form_a=$(sbatch --parsable --array=0-19%8 run_form_array.slurm)
+echo "form_a $jid_form_a"
+squeue -u panada
+```
+
+等 `squeue -u panada` 里没有这批任务后检查：
+
+```bash
+sacct -j "$jid_form_a" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+for f in alos_form_${jid_form_a}_*.err; do echo "===== $f ====="; tail -n 30 "$f"; done
+```
+
+如果成功，form 第二批：
+
+```bash
+jid_form_b=$(sbatch --parsable --array=20-20%1 run_form_array.slurm)
+echo "form_b $jid_form_b"
+squeue -u panada
+```
+
+等完成后检查：
+
+```bash
+sacct -j "$jid_form_b" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+for f in alos_form_${jid_form_b}_*.err; do echo "===== $f ====="; tail -n 30 "$f"; done
+```
+
+mosaic 也按两批：
+
+```bash
+jid_mosaic_a=$(sbatch --parsable --array=0-19%8 run_mosaic_array.slurm)
+echo "mosaic_a $jid_mosaic_a"
+```
+
+等完成并检查成功后：
+
+```bash
+jid_mosaic_b=$(sbatch --parsable --array=20-20%1 run_mosaic_array.slurm)
+echo "mosaic_b $jid_mosaic_b"
+```
+
+mosaic 两批完成后，跑 radar/DEM offset：
+
+```bash
+jid_rdrdem=$(sbatch --parsable run_radar_dem_offset.slurm)
+echo "rdrdem $jid_rdrdem"
+```
+
+等 `rdrdem` 完成后，rect range offset 也按两批：
+
+```bash
+jid_rect_a=$(sbatch --parsable --array=0-19%8 run_rect_range_offset.slurm)
+echo "rect_a $jid_rect_a"
+```
+
+等完成并检查成功后：
+
+```bash
+jid_rect_b=$(sbatch --parsable --array=20-20%1 run_rect_range_offset.slurm)
+echo "rect_b $jid_rect_b"
+```
+
+diff 也按两批：
+
+```bash
+jid_diff_a=$(sbatch --parsable --array=0-19%8 run_diff_array.slurm)
+echo "diff_a $jid_diff_a"
+```
+
+等完成并检查成功后：
+
+```bash
+jid_diff_b=$(sbatch --parsable --array=20-20%1 run_diff_array.slurm)
+echo "diff_b $jid_diff_b"
+```
+
+look/coherence 也按两批：
+
+```bash
+jid_look_a=$(sbatch --parsable --array=0-19%8 run_look_array.slurm)
+echo "look_a $jid_look_a"
+```
+
+等完成并检查成功后：
+
+```bash
+jid_look_b=$(sbatch --parsable --array=20-20%1 run_look_array.slurm)
+echo "look_b $jid_look_b"
+```
+
+最后跑几何多视：
+
+```bash
+jid_geom=$(sbatch --parsable run_look_geom.slurm)
+echo "look_geom $jid_geom"
+```
+
+pair 数不超过 20 时，可以手动创建自动提交脚本：
+
+```bash
+nano submit_02_pairs.sh
 ```
 
 写入：
@@ -654,68 +800,36 @@ set -euo pipefail
 
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
-# 你的集群当前一次最多提交 20 个 array task。
-# 21 个 pair 时拆成两批：
-# A: index 0-19, 共 20 个 pair，最多同时 8 个跑
-# B: index 20-20, 共 1 个 pair
-A="0-19%8"
-B="20-20%1"
+jid_form=$(sbatch --parsable run_form_array.slurm)
+jid_mosaic=$(sbatch --parsable --dependency=afterok:$jid_form run_mosaic_array.slurm)
+jid_rdrdem=$(sbatch --parsable --dependency=afterok:$jid_mosaic run_radar_dem_offset.slurm)
+jid_rect=$(sbatch --parsable --dependency=afterok:$jid_rdrdem run_rect_range_offset.slurm)
+jid_diff=$(sbatch --parsable --dependency=afterok:$jid_rect run_diff_array.slurm)
+jid_look=$(sbatch --parsable --dependency=afterok:$jid_diff run_look_array.slurm)
+jid_geom=$(sbatch --parsable --dependency=afterok:$jid_look run_look_geom.slurm)
 
-jid_form_a=$(sbatch --parsable --array=$A run_form_array.slurm)
-jid_form_b=$(sbatch --parsable --array=$B run_form_array.slurm)
-
-jid_mosaic_a=$(sbatch --parsable --dependency=afterok:$jid_form_a:$jid_form_b --array=$A run_mosaic_array.slurm)
-jid_mosaic_b=$(sbatch --parsable --dependency=afterok:$jid_form_a:$jid_form_b --array=$B run_mosaic_array.slurm)
-
-jid_rdrdem=$(sbatch --parsable --dependency=afterok:$jid_mosaic_a:$jid_mosaic_b run_radar_dem_offset.slurm)
-
-jid_rect_a=$(sbatch --parsable --dependency=afterok:$jid_rdrdem --array=$A run_rect_range_offset.slurm)
-jid_rect_b=$(sbatch --parsable --dependency=afterok:$jid_rdrdem --array=$B run_rect_range_offset.slurm)
-
-jid_diff_a=$(sbatch --parsable --dependency=afterok:$jid_rect_a:$jid_rect_b --array=$A run_diff_array.slurm)
-jid_diff_b=$(sbatch --parsable --dependency=afterok:$jid_rect_a:$jid_rect_b --array=$B run_diff_array.slurm)
-
-jid_look_a=$(sbatch --parsable --dependency=afterok:$jid_diff_a:$jid_diff_b --array=$A run_look_array.slurm)
-jid_look_b=$(sbatch --parsable --dependency=afterok:$jid_diff_a:$jid_diff_b --array=$B run_look_array.slurm)
-
-jid_geom=$(sbatch --parsable --dependency=afterok:$jid_look_a:$jid_look_b run_look_geom.slurm)
-
-echo "form_a    $jid_form_a"
-echo "form_b    $jid_form_b"
-echo "mosaic_a  $jid_mosaic_a"
-echo "mosaic_b  $jid_mosaic_b"
+echo "form      $jid_form"
+echo "mosaic    $jid_mosaic"
 echo "rdrdem    $jid_rdrdem"
-echo "rect_a    $jid_rect_a"
-echo "rect_b    $jid_rect_b"
-echo "diff_a    $jid_diff_a"
-echo "diff_b    $jid_diff_b"
-echo "look_a    $jid_look_a"
-echo "look_b    $jid_look_b"
+echo "rect      $jid_rect"
+echo "diff      $jid_diff"
+echo "look      $jid_look"
 echo "lookgeom  $jid_geom"
 ```
 
-运行：
+自动运行：
 
 ```bash
-bash submit_02_pairs_batch.sh
+bash submit_02_pairs.sh
 squeue -u panada
 ```
 
-如果以后 pair 数变了，只需要改 `A` 和 `B`。原则是每批不要超过 20 个 array task：
-
-```text
-21 个 pair：A=0-19%8，B=20-20%1
-30 个 pair：A=0-19%8，B=20-29%8
-40 个 pair：A=0-19%8，B=20-39%8
-41 个 pair：需要 A/B/C 三批
-```
-
-跑完后检查：
+手动检查：
 
 ```bash
 find pairs -path "*/insar/*_8rlks_12alks.cor" -type f | wc -l
 find pairs -path "*/insar/diff_*_8rlks_12alks.int" -type f | wc -l
-cat dates_resampled/230127/insar/affine_transform.txt
+cat dates_resampled/CHANGE_REF_YYMMDD/insar/affine_transform.txt
 ```
 
 预期：
@@ -724,6 +838,9 @@ cat dates_resampled/230127/insar/affine_transform.txt
 cor 数量 = pair 数量
 diff int 数量 = pair 数量
 affine_transform.txt 存在，RMS 不离谱
+```
+
+<a id="sec-2-5"></a>
 ```
 
 ### 2.5 阶段 3：电离层到检查图
