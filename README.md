@@ -120,6 +120,8 @@ ION_LOOKS = 64rlks_96alks
 
 不要直接改旧目录，也不建议 `cp -a` 复制整个旧 `proc`，因为会把 `dates_resampled/`、`pairs/`、`pairs_ion/`、MintPy `.h5` 等大结果一起复制过去。
 
+这里的 `alos2_stack_NEW` 就是本次要跑的新处理工程目录，不是文档目录，也不是系统自动生成的名字。你可以继续用这个名字，不需要再改名；以后换区域时，也可以把它换成更具体的名字。
+
 推荐只复制脚本、配置和文档：
 
 ```bash
@@ -136,6 +138,8 @@ cp ../alos2_stack/mintpy/*.slurm mintpy/
 cp ../alos2_stack/mintpy/*.txt mintpy/
 cp ../alos2_stack/mintpy/*.cfg mintpy/ 2>/dev/null
 ```
+
+如果你已经建好了 `/work/home/panada/insar/proc/alos2_stack_NEW`，这一节不用重复做，直接进入 1.4。
 
 确认 Slurm 文件还在：
 
@@ -212,8 +216,6 @@ OLD_REF="221221"
 NEW_REF="CHANGE_REF_YYMMDD"
 
 DATES=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_REF_YYMMDD CHANGE_YYMMDD_4)
-DATES2=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_YYMMDD_4)
-PAIRS=(CHANGE_YYMMDD_1-CHANGE_YYMMDD_2 CHANGE_YYMMDD_1-CHANGE_REF_YYMMDD CHANGE_REF_YYMMDD-CHANGE_YYMMDD_4)
 
 PAIR_CONCURRENCY=8
 ION_CONCURRENCY=4
@@ -222,6 +224,18 @@ RESAMPLE_CONCURRENCY=2
 
 # ===== DO NOT EDIT BELOW unless needed =====
 files=$(find . -maxdepth 2 \( -name "*.slurm" -o -name "alosStack.xml" -o -name "alos2_noto.txt" -o -name "smallbaselineApp.cfg" \) | sort)
+
+DATES2=()
+for d in "${DATES[@]}"; do
+  [ "$d" = "$NEW_REF" ] || DATES2+=("$d")
+done
+
+PAIRS=()
+for ((i=0; i<${#DATES[@]}; i++)); do
+  for ((j=i+1; j<${#DATES[@]}; j++)); do
+    PAIRS+=("${DATES[$i]}-${DATES[$j]}")
+  done
+done
 
 date_block="${DATES[*]}"
 date2_block="${DATES2[*]}"
@@ -232,11 +246,12 @@ date_last=$((${#DATES[@]} - 1))
 date2_last=$((${#DATES2[@]} - 1))
 
 for f in $files; do
-  perl -0pi -e "s#\Q$OLD_PROC\E#$NEW_PROC#g" "$f"
+  perl -0pi -e "s#\Q$OLD_PROC\E(?![A-Za-z0-9_])#$NEW_PROC#g" "$f"
   perl -0pi -e "s#\Q$OLD_DATA\E#$NEW_DATA#g" "$f"
   perl -0pi -e "s#\Q$OLD_DEM\E#$NEW_DEM#g" "$f"
   perl -0pi -e "s#\Q$OLD_WBD\E#$NEW_WBD#g" "$f"
   perl -0pi -e "s#\Q$OLD_REF\E#$NEW_REF#g" "$f"
+  perl -0pi -e "s#\Q${NEW_PROC}_NEW\E#$NEW_PROC#g" "$f"
 done
 
 [ -f run_resample_array.slurm ] && perl -0pi -e "s/dates=\([^)]*\)/dates=($date_block)/s" run_resample_array.slurm
@@ -271,6 +286,14 @@ done
 
 echo "=== old strings check ==="
 grep -R "$OLD_PROC\|$OLD_DATA\|$OLD_DEM\|$OLD_WBD\|$OLD_REF" -n -- *.slurm mintpy/*.slurm alosStack.xml mintpy/*.txt 2>/dev/null || true
+
+echo "=== duplicated NEW path check ==="
+grep -R "${NEW_PROC}_NEW" -n -- *.slurm mintpy/*.slurm alosStack.xml mintpy/*.txt 2>/dev/null || true
+
+echo "=== generated dates ==="
+echo "DATES: ${DATES[*]}"
+echo "DATES2: ${DATES2[*]}"
+echo "PAIRS (${#PAIRS[@]}): ${PAIRS[*]}"
 
 echo "=== bash syntax check ==="
 bash -n *.slurm
