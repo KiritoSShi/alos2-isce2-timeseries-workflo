@@ -20,11 +20,12 @@
   - [1.6 检查 alosStack.xml 并重新生成 cmd](#sec-1-6)
 - [2. 工程步骤：哪些 Slurm 自动连跑，哪里手动检查](#sec-2)
   - [2.1 先确认所有 Slurm 都在](#sec-2-1)
-  - [2.2 阶段 1：几何准备](#sec-2-2)
-  - [2.3 阶段 2：干涉图、多视、几何多视](#sec-2-3)
-  - [2.4 阶段 3：电离层到检查图](#sec-2-4)
-  - [2.5 阶段 4：应用电离层校正](#sec-2-5)
-  - [2.6 阶段 5：滤波、解缠、地理编码、MintPy](#sec-2-6)
+  - [2.2 阶段 0：读取数据，生成 dates/baseline](#sec-2-2)
+  - [2.3 阶段 1：几何准备](#sec-2-3)
+  - [2.4 阶段 2：干涉图、多视、几何多视](#sec-2-4)
+  - [2.5 阶段 3：电离层到检查图](#sec-2-5)
+  - [2.6 阶段 4：应用电离层校正](#sec-2-6)
+  - [2.7 阶段 5：滤波、解缠、地理编码、MintPy](#sec-2-7)
 - [3. 其它说明](#sec-3)
   - [3.1 water mask 到底怎么用](#sec-3-1)
   - [3.2 Slurm 核数和并发怎么理解](#sec-3-2)
@@ -42,6 +43,9 @@
 手动：新建处理工程，只复制流程文件；data/DEM/water mask 目录可继续沿用
 手动：一键替换旧路径、旧日期、旧 pair，并检查
 手动：检查 alosStack.xml，重新 create_cmds.py
+
+自动：run_cmd1_pre_offset.slurm
+手动：检查 dates/ 和 baseline/ 是否生成
 
 自动：submit_01_geometry.sh
 手动：检查几何结果
@@ -72,7 +76,7 @@ sbatch --dependency=afterok:上一步JOBID 下一步.slurm
 2. 新增的 submit_01 到 submit_05
 ```
 
-你手动运行的是 `submit_01` 到 `submit_05`，它们内部会自动 `sbatch` 原来的计算脚本。
+你手动运行的是 `run_cmd1_pre_offset.slurm` 和 `submit_01` 到 `submit_05`。其中 `run_cmd1_pre_offset.slurm` 负责生成 `dates/`、`baseline/` 等基础目录；`submit_01` 到 `submit_05` 内部会自动 `sbatch` 原来的计算脚本。
 
 <a id="sec-1"></a>
 
@@ -185,28 +189,6 @@ cd /work/home/panada/insar/proc/alos2_stack_NEW
 nano retarget_project.sh
 ```
 
-主要更改的部分：
-```bash
-NEW_PROC="/work/home/panada/insar/proc/alos2_stack_NEW"
-
-NEW_REF="CHANGE_REF_YYMMDD"
-
-DATES=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_REF_YYMMDD CHANGE_YYMMDD_4)
-
-DATES2=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_YYMMDD_4)
-```
-
-例如
-```bash
-NEW_PROC="/work/home/panada/insar/proc/alos2_stack_NEW"
-
-NEW_REF="240401"
-
-DATES=(240101 240215 240401 240520 240705)
-
-DATES2=(240101 240215 240520 240705)
-```
-
 写入：
 
 ```bash
@@ -229,49 +211,16 @@ NEW_WBD="/work/home/panada/insar/data/dem/wbd_1_arcsec/asf_watermask_clip.wbd"
 OLD_REF="221221"
 NEW_REF="CHANGE_REF_YYMMDD"
 
-# 全部日期，必须按时间先后顺序写
 DATES=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_REF_YYMMDD CHANGE_YYMMDD_4)
+DATES2=(CHANGE_YYMMDD_1 CHANGE_YYMMDD_2 CHANGE_YYMMDD_4)
+PAIRS=(CHANGE_YYMMDD_1-CHANGE_YYMMDD_2 CHANGE_YYMMDD_1-CHANGE_REF_YYMMDD CHANGE_REF_YYMMDD-CHANGE_YYMMDD_4)
 
-# 并发数
 PAIR_CONCURRENCY=8
 ION_CONCURRENCY=4
 DATE2_CONCURRENCY=3
 RESAMPLE_CONCURRENCY=2
 
 # ===== DO NOT EDIT BELOW unless needed =====
-
-# 自动生成非参考日期 DATES2
-DATES2=()
-for d in "${DATES[@]}"; do
-  if [[ "$d" != "$NEW_REF" ]]; then
-    DATES2+=("$d")
-  fi
-done
-
-# 自动生成所有两两组合 PAIRS
-PAIRS=()
-for ((i=0; i<${#DATES[@]}-1; i++)); do
-  for ((j=i+1; j<${#DATES[@]}; j++)); do
-    PAIRS+=("${DATES[i]}-${DATES[j]}")
-  done
-done
-
-echo "=== generated dates ==="
-printf 'DATES: '; printf '%s ' "${DATES[@]}"; echo
-printf 'DATES2: '; printf '%s ' "${DATES2[@]}"; echo
-printf 'PAIRS (%d): ' "${#PAIRS[@]}"; printf '%s ' "${PAIRS[@]}"; echo
-
-# 基本检查
-if [[ ${#DATES[@]} -lt 2 ]]; then
-  echo "ERROR: DATES 至少需要 2 个日期" >&2
-  exit 1
-fi
-
-if [[ ${#DATES2[@]} -ne $((${#DATES[@]} - 1)) ]]; then
-  echo "ERROR: NEW_REF=$NEW_REF 不在 DATES 中，或 DATES 有重复" >&2
-  exit 1
-fi
-
 files=$(find . -maxdepth 2 \( -name "*.slurm" -o -name "alosStack.xml" -o -name "alos2_noto.txt" -o -name "smallbaselineApp.cfg" \) | sort)
 
 date_block="${DATES[*]}"
@@ -323,14 +272,9 @@ done
 echo "=== old strings check ==="
 grep -R "$OLD_PROC\|$OLD_DATA\|$OLD_DEM\|$OLD_WBD\|$OLD_REF" -n -- *.slurm mintpy/*.slurm alosStack.xml mintpy/*.txt 2>/dev/null || true
 
-echo "=== CHANGE placeholder check ==="
-grep -R "CHANGE_" -n -- *.slurm mintpy/*.slurm alosStack.xml mintpy/*.txt 2>/dev/null || true
-
 echo "=== bash syntax check ==="
 bash -n *.slurm
 bash -n mintpy/*.slurm
-
-echo "=== done ==="
 ```
 
 运行：
@@ -341,34 +285,6 @@ chmod +x retarget_project.sh
 ```
 
 <a id="sec-1-5"></a>
-
-更多替换
-```bash
-cd /work/home/panada/insar/proc/alos2_stack_NEW
-
-# 按你的新日期修改
-dates_all="220114 221118 221230 230127 230310 230421 230505 240126"
-
-pairs_all="220114-221118 220114-221230 220114-230127 220114-230310 221118-221230 221118-230127 221118-230310 221118-230421 221230-230127 221230-230310 221230-230421 221230-230505 230127-230310 230127-230421 230127-230505 230127-240126 230310-230421 230310-230505 230310-240126 230421-230505 230421-240126 230505-240126"
-
-ref_date="230127"
-
-# 1. 修 run_cmd1_tail.slurm 里的 sec_date
-perl -0pi -e "s/-ref_date ${ref_date} -sec_date .*? -nrlks1/-ref_date ${ref_date} -sec_date ${dates_all} -nrlks1/s" run_cmd1_tail.slurm
-
-# 2. 修 ion pair_up/check 的 -pairs 列表
-perl -0pi -e "s/-pairs .*?\n/ -pairs ${pairs_all}\n/s" run_ion_pairup.slurm
-perl -0pi -e "s/-pairs .*?\n/ -pairs ${pairs_all}\n/s" run_ion_check.slurm
-
-# 3. 修 radar_dem_offset 的 amp pair
-# 这里选一个和参考日期相连、质量较好的 pair
-old_amp=$(grep -o '../../pairs/[^ ]*\.amp' run_radar_dem_offset.slurm | head -1)
-new_amp="../../pairs/220114-230127/insar/220114-230127_2rlks_3alks.amp"
-sed -i "s#${old_amp}#${new_amp}#" run_radar_dem_offset.slurm
-
-# 4. 删除旧 MintPy 输出文件，避免旧日期混进检查
-rm -f mintpy/coherenceSpatialAvg.txt
-```
 
 ### 1.5 检查替换结果
 
@@ -425,6 +341,8 @@ cd /work/home/panada/insar/proc/alos2_stack_NEW
 ${ISCE_STACK}/alosStack/create_cmds.py -stack_par alosStack.xml
 ```
 
+注意：`create_cmds.py` 只生成 `cmd_1.sh`、`cmd_2.sh`、`cmd_3.sh` 等处理命令；它不会生成 `dates/` 和 `baseline/`。下一步必须先跑阶段 0，把原始 ALOS-2 数据读入 ISCE 工程。
+
 检查 `cmd_1.sh` 不要有 `-use_wbd_offset`：
 
 ```bash
@@ -452,13 +370,14 @@ sed -i 's/ -use_wbd_offset//g' cmd_1.sh
 
 | 阶段 | 自动连跑的 Slurm | 跑完后必须手动检查什么 | 检查通过后 |
 |---|---|---|---|
+| 阶段 0 读取数据 | `run_cmd1_pre_offset.slurm` | `dates/`、`baseline/` 是否生成；参考日期是否在 `dates/` 里 | 跑阶段 1 |
 | 阶段 1 几何准备 | `run_offset_array.slurm` -> `run_resample_array.slurm` -> `run_cmd1_tail.slurm` -> `run_geo2rdr_array.slurm` | `cull.off`、`dates_resampled`、`lat/lon/hgt/los`、`rg/az.off` 是否齐全 | 跑阶段 2 |
 | 阶段 2 干涉图/多视 | `run_form_array.slurm` -> `run_mosaic_array.slurm` -> `run_radar_dem_offset.slurm` -> `run_rect_range_offset.slurm` -> `run_diff_array.slurm` -> `run_look_array.slurm` -> `run_look_geom.slurm` | `.cor`、`diff_*.int` 数量是否等于 pair 数；`affine_transform.txt` 是否正常；相干性是否明显异常 | 跑阶段 3 |
 | 阶段 3 电离层检查图 | `run_ion_pairup.slurm` -> `run_ion_unwrap_array.slurm` -> `run_ion_filt_array.slurm` -> `run_ion_prep_array.slurm` -> `run_ion_cal_array.slurm` -> `run_ion_check.slurm` | 必须人工看 `fig_ion/*.tif`，判断是否有坏 pair | 没坏 pair 或修改 pair 列表后，跑阶段 4 |
 | 阶段 4 应用 ion 校正 | `run_ion_ls.slurm` -> `run_ion_correct_array.slurm` | `dates_ion` 是否生成；`diff_*_ori.int` 是否备份；ion 校正是否应用回 `pairs` | 跑阶段 5 |
 | 阶段 5 最终结果 | `run_filt_array.slurm` -> `run_unwrap_array.slurm` -> `run_geocode_array.slurm` -> `run_geocode_los.slurm` -> `mintpy/run_mintpy_load.slurm` -> `mintpy/run_mintpy_all.slurm` | `filt_*.int`、`.unw`、`.geo`、MintPy `.h5` 是否生成；unwrap/MintPy 结果是否合理 | 归档和可视化 |
 
-换句话说：**你手动运行 5 个 `submit_*.sh`，每个 `submit_*.sh` 里面自动提交一串 `run_*.slurm`；每串跑完后你人工检查一次。**
+换句话说：**先单独跑一次阶段 0；之后手动运行 5 个 `submit_*.sh`，每个 `submit_*.sh` 里面自动提交一串 `run_*.slurm`；每串跑完后你人工检查一次。**
 
 <a id="sec-2-1"></a>
 
@@ -478,7 +397,113 @@ ls mintpy/run_mintpy_load.slurm mintpy/run_mintpy_all.slurm
 
 <a id="sec-2-2"></a>
 
-### 2.2 阶段 1：几何准备
+### 2.2 阶段 0：读取数据，生成 dates/baseline
+
+意义：
+
+```text
+把 data directory 里的 ALOS-2 原始数据读进 ISCE 工程，生成 dates/、baseline/ 等基础目录。
+```
+
+这一步必须在 offset/resample 之前跑。你刚才遇到的：
+
+```text
+Exception: cannot get reference date 230127 from the data list
+find: dates: No such file or directory
+```
+
+就是因为跳过了这一段。不是少建一个空目录，而是少跑了 `cmd_1.sh` 前半段的 `read_data.py` 等命令。
+
+从 `cmd_1.sh` 里提取 offset 之前的命令：
+
+```bash
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+awk '
+/estimate_slc_offset.py/ {exit}
+{print}
+' cmd_1.sh > run_cmd1_pre_offset.sh
+
+chmod +x run_cmd1_pre_offset.sh
+grep -n "read_data\|baseline\|estimate_slc_offset" run_cmd1_pre_offset.sh
+```
+
+创建 Slurm：
+
+```bash
+nano run_cmd1_pre_offset.slurm
+```
+
+写入：
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=alos_pre_offset
+#SBATCH --output=%x_%j.log
+#SBATCH --error=%x_%j.err
+#SBATCH -c 8
+#SBATCH --export=NONE
+#SBATCH -p wzhctest
+
+set -e
+
+source /etc/profile
+module purge
+source /work/home/panada/env/scons_env/bin/activate
+source /work/home/panada/isce2_env.sh
+
+export ISCE_STACK=/work/home/panada/isce/isce2-main/contrib/stack
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+echo "=== Start pre-offset/read_data step ==="
+date
+bash run_cmd1_pre_offset.sh
+echo "=== Done pre-offset/read_data step ==="
+date
+```
+
+提交：
+
+```bash
+jid_pre=$(sbatch --parsable run_cmd1_pre_offset.slurm)
+echo "pre_offset/read_data job: $jid_pre"
+squeue -j "$jid_pre"
+```
+
+检查：
+
+```bash
+sacct -j "$jid_pre" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+cat alos_pre_offset_${jid_pre}.err
+tail -n 100 alos_pre_offset_${jid_pre}.log
+
+find dates -maxdepth 1 -type d | sort
+find baseline -maxdepth 2 -type f | sort | head -50
+ls dates/CHANGE_REF_YYMMDD
+```
+
+预期：
+
+```text
+Slurm State = COMPLETED
+ExitCode = 0:0
+dates/ 目录存在
+baseline/ 目录存在
+dates/CHANGE_REF_YYMMDD 存在
+```
+
+如果 `dates/CHANGE_REF_YYMMDD` 不存在，先不要继续阶段 1，回头检查：
+
+```bash
+grep -n "reference date" alosStack.xml
+find /work/home/panada/insar/data/alos2 -maxdepth 1 -type d | sort
+```
+
+<a id="sec-2-3"></a>
+
+### 2.3 阶段 1：几何准备
 
 意义：
 
@@ -545,9 +570,9 @@ cull.off 数量 = 非参考日期数量
 参考日期 insar 目录下有 lat/lon/hgt/los/wbd
 ```
 
-<a id="sec-2-3"></a>
+<a id="sec-2-4"></a>
 
-### 2.3 阶段 2：干涉图、多视、几何多视
+### 2.4 阶段 2：干涉图、多视、几何多视
 
 意义：
 
@@ -621,9 +646,9 @@ diff int 数量 = pair 数量
 affine_transform.txt 存在，RMS 不离谱
 ```
 
-<a id="sec-2-4"></a>
+<a id="sec-2-5"></a>
 
-### 2.4 阶段 3：电离层到检查图
+### 2.5 阶段 3：电离层到检查图
 
 意义：
 
@@ -696,9 +721,9 @@ find fig_ion -type f | sort
 
 如果没有坏 pair，继续阶段 4。
 
-<a id="sec-2-5"></a>
+<a id="sec-2-6"></a>
 
-### 2.5 阶段 4：应用电离层校正
+### 2.6 阶段 4：应用电离层校正
 
 意义：
 
@@ -755,9 +780,9 @@ dates_ion 里有每个日期的 ion 文件
 每个 pair 的原始差分干涉图被备份为 *_ori.int
 ```
 
-<a id="sec-2-6"></a>
+<a id="sec-2-7"></a>
 
-### 2.6 阶段 5：滤波、解缠、地理编码、MintPy
+### 2.7 阶段 5：滤波、解缠、地理编码、MintPy
 
 意义：
 
