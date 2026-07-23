@@ -610,6 +610,9 @@ cull.off 数量 = 非参考日期数量
 
 
 
+
+
+
 ### 2.4 阶段 2：干涉图、多视、几何多视
 
 意义：
@@ -618,30 +621,36 @@ cull.off 数量 = 非参考日期数量
 形成 pair 干涉图，做 mosaic，估计 radar/DEM affine，修正 range offset，生成差分干涉图和相干性。
 ```
 
-包含的 Slurm/脚本：
+包含的 Slurm：
 
 ```text
-pair 数 <= 20 时：
-  submit_02_pairs.sh
-  内部依次提交 run_form_array.slurm -> run_mosaic_array.slurm -> run_radar_dem_offset.slurm -> run_rect_range_offset.slurm -> run_diff_array.slurm -> run_look_array.slurm -> run_look_geom.slurm
-
-pair 数 > 20 时：
-  run_cmd2_all.slurm
-  内部直接运行 cmd_2.sh
+run_form_array.slurm
+run_mosaic_array.slurm
+run_radar_dem_offset.slurm
+run_rect_range_offset.slurm
+run_diff_array.slurm
+run_look_array.slurm
+run_look_geom.slurm
 ```
 
 先判断 pair 数：
 
 ```bash
 cd /work/home/panada/insar/proc/alos2_stack_NEW
-
 grep -o "[0-9]\{6\}-[0-9]\{6\}" run_form_array.slurm | sort -u | wc -l
 ```
 
 如果 pair 数不超过 20，用原来的自动提交脚本：
 
 ```bash
-nano submit_02_pairs.sh
+bash submit_02_pairs.sh
+squeue -u panada
+```
+
+如果 pair 数超过 20，比如 21 个 pair，用分批并行提交脚本：
+
+```bash
+nano submit_02_pairs_batch.sh
 ```
 
 写入：
@@ -652,89 +661,63 @@ set -euo pipefail
 
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
-jid_form=$(sbatch --parsable run_form_array.slurm)
-jid_mosaic=$(sbatch --parsable --dependency=afterok:$jid_form run_mosaic_array.slurm)
-jid_rdrdem=$(sbatch --parsable --dependency=afterok:$jid_mosaic run_radar_dem_offset.slurm)
-jid_rect=$(sbatch --parsable --dependency=afterok:$jid_rdrdem run_rect_range_offset.slurm)
-jid_diff=$(sbatch --parsable --dependency=afterok:$jid_rect run_diff_array.slurm)
-jid_look=$(sbatch --parsable --dependency=afterok:$jid_diff run_look_array.slurm)
-jid_geom=$(sbatch --parsable --dependency=afterok:$jid_look run_look_geom.slurm)
+# 你的集群当前一次最多提交 20 个 array task。
+# 21 个 pair 时拆成两批：
+# A: index 0-19, 共 20 个 pair，最多同时 8 个跑
+# B: index 20-20, 共 1 个 pair
+A="0-19%8"
+B="20-20%1"
 
-echo "form      $jid_form"
-echo "mosaic    $jid_mosaic"
+jid_form_a=$(sbatch --parsable --array=$A run_form_array.slurm)
+jid_form_b=$(sbatch --parsable --array=$B run_form_array.slurm)
+
+jid_mosaic_a=$(sbatch --parsable --dependency=afterok:$jid_form_a:$jid_form_b --array=$A run_mosaic_array.slurm)
+jid_mosaic_b=$(sbatch --parsable --dependency=afterok:$jid_form_a:$jid_form_b --array=$B run_mosaic_array.slurm)
+
+jid_rdrdem=$(sbatch --parsable --dependency=afterok:$jid_mosaic_a:$jid_mosaic_b run_radar_dem_offset.slurm)
+
+jid_rect_a=$(sbatch --parsable --dependency=afterok:$jid_rdrdem --array=$A run_rect_range_offset.slurm)
+jid_rect_b=$(sbatch --parsable --dependency=afterok:$jid_rdrdem --array=$B run_rect_range_offset.slurm)
+
+jid_diff_a=$(sbatch --parsable --dependency=afterok:$jid_rect_a:$jid_rect_b --array=$A run_diff_array.slurm)
+jid_diff_b=$(sbatch --parsable --dependency=afterok:$jid_rect_a:$jid_rect_b --array=$B run_diff_array.slurm)
+
+jid_look_a=$(sbatch --parsable --dependency=afterok:$jid_diff_a:$jid_diff_b --array=$A run_look_array.slurm)
+jid_look_b=$(sbatch --parsable --dependency=afterok:$jid_diff_a:$jid_diff_b --array=$B run_look_array.slurm)
+
+jid_geom=$(sbatch --parsable --dependency=afterok:$jid_look_a:$jid_look_b run_look_geom.slurm)
+
+echo "form_a    $jid_form_a"
+echo "form_b    $jid_form_b"
+echo "mosaic_a  $jid_mosaic_a"
+echo "mosaic_b  $jid_mosaic_b"
 echo "rdrdem    $jid_rdrdem"
-echo "rect      $jid_rect"
-echo "diff      $jid_diff"
-echo "look      $jid_look"
+echo "rect_a    $jid_rect_a"
+echo "rect_b    $jid_rect_b"
+echo "diff_a    $jid_diff_a"
+echo "diff_b    $jid_diff_b"
+echo "look_a    $jid_look_a"
+echo "look_b    $jid_look_b"
 echo "lookgeom  $jid_geom"
 ```
 
 运行：
 
 ```bash
-bash submit_02_pairs.sh
+bash submit_02_pairs_batch.sh
 squeue -u panada
 ```
 
-如果 pair 数超过 20，比如你现在是 21 个 pair，不要运行 `submit_02_pairs.sh`，因为集群会报：
+如果以后 pair 数变了，只需要改 `A` 和 `B`。原则是每批不要超过 20 个 array task：
 
 ```text
-QOSMaxSubmitJobPerUserLimit
+21 个 pair：A=0-19%8，B=20-20%1
+30 个 pair：A=0-19%8，B=20-29%8
+40 个 pair：A=0-19%8，B=20-39%8
+41 个 pair：需要 A/B/C 三批
 ```
 
-这时创建一个普通 Slurm，只提交 1 个 job，让它顺序跑完整 `cmd_2.sh`：
-
-```bash
-nano run_cmd2_all.slurm
-```
-
-写入：
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=alos_cmd2_all
-#SBATCH --output=%x_%j.log
-#SBATCH --error=%x_%j.err
-#SBATCH -c 8
-#SBATCH --export=NONE
-#SBATCH -p wzhctest
-
-set -e
-
-source /etc/profile
-module purge
-source /work/home/panada/env/scons_env/bin/activate
-source /work/home/panada/isce2_env.sh
-
-export ISCE_STACK=/work/home/panada/isce/isce2-main/contrib/stack
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-
-cd /work/home/panada/insar/proc/alos2_stack_NEW
-
-echo "=== Start cmd_2 all-in-one ==="
-date
-bash cmd_2.sh
-echo "=== Done cmd_2 all-in-one ==="
-date
-```
-
-提交：
-
-```bash
-jid_cmd2=$(sbatch --parsable run_cmd2_all.slurm)
-echo "cmd2_all $jid_cmd2"
-squeue -u panada
-```
-
-检查日志：
-
-```bash
-sacct -j "$jid_cmd2" --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
-cat alos_cmd2_all_${jid_cmd2}.err
-tail -n 120 alos_cmd2_all_${jid_cmd2}.log
-```
-
-手动检查结果：
+跑完后检查：
 
 ```bash
 find pairs -path "*/insar/*_8rlks_12alks.cor" -type f | wc -l
@@ -751,13 +734,17 @@ affine_transform.txt 存在，RMS 不离谱
 ```
 ```
 
-你这次就是走第二条：
+你这次 21 个 pair，就用：
 
-```text
-pair 数 > 20 -> run_cmd2_all.slurm
+```bash
+bash submit_02_pairs_batch.sh
 ```
 
-因为你有 21 个 pair。
+不要用：
+
+```bash
+bash submit_02_pairs.sh
+```
 
 ### 2.5 阶段 3：电离层到检查图
 
