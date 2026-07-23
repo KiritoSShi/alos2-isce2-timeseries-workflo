@@ -504,7 +504,7 @@ tail -n 100 alos_pre_offset_${jid_pre}.log
 
 find dates -maxdepth 1 -type d | sort
 find baseline -maxdepth 2 -type f | sort | head -50
-ls dates/CHANGE_REF_YYMMDD
+ls dates/CHANGE_REF_YYMMDD(改成具体的reference日期）
 ```
 
 预期：
