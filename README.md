@@ -640,13 +640,6 @@ cd /work/home/panada/insar/proc/alos2_stack_NEW
 grep -o "[0-9]\{6\}-[0-9]\{6\}" run_form_array.slurm | sort -u | wc -l
 ```
 
-如果 pair 数不超过 20，用原来的自动提交脚本：
-
-```bash
-bash submit_02_pairs.sh
-squeue -u panada
-```
-
 如果 pair 数超过 20，比如 21 个 pair，用分批并行提交脚本：
 
 ```bash
@@ -731,19 +724,6 @@ cat dates_resampled/230127/insar/affine_transform.txt
 cor 数量 = pair 数量
 diff int 数量 = pair 数量
 affine_transform.txt 存在，RMS 不离谱
-```
-```
-
-你这次 21 个 pair，就用：
-
-```bash
-bash submit_02_pairs_batch.sh
-```
-
-不要用：
-
-```bash
-bash submit_02_pairs.sh
 ```
 
 ### 2.5 阶段 3：电离层到检查图
