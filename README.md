@@ -443,12 +443,13 @@ find: dates: No such file or directory
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
 awk '
-/estimate_slc_offset.py/ {exit}
+/^##################################################$/ && seen_read && NR > 1 {exit}
+/read data/ {seen_read=1}
 {print}
 ' cmd_1.sh > run_cmd1_pre_offset.sh
 
 chmod +x run_cmd1_pre_offset.sh
-grep -n "read_data\|baseline\|estimate_slc_offset" run_cmd1_pre_offset.sh
+bash -n run_cmd1_pre_offset.sh
 ```
 
 创建 Slurm：
@@ -480,11 +481,23 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 cd /work/home/panada/insar/proc/alos2_stack_NEW
 
+echo "=== Environment check ==="
+which python3
+python3 --version
+echo "PWD=$PWD"
+
 echo "=== Start pre-offset/read_data step ==="
 date
+
+bash -n run_cmd1_pre_offset.sh
 bash run_cmd1_pre_offset.sh
+
 echo "=== Done pre-offset/read_data step ==="
 date
+
+echo "=== Output check ==="
+find dates -maxdepth 1 -type d | sort
+find baseline -maxdepth 2 -type f | sort | head -50
 ```
 
 提交：
