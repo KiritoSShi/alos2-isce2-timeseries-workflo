@@ -591,10 +591,11 @@ squeue -u panada
 手动检查：
 
 ```bash
-find dates -name cull.off | sort | wc -l
+find dates -name cull.off | wc -l
+find dates_resampled -path "*/s1/*.slc" -type f | wc -l
 find dates_resampled -path "*/insar/*_rg.off" -type f | wc -l
 find dates_resampled -path "*/insar/*_az.off" -type f | wc -l
-find dates_resampled/CHANGE_REF_YYMMDD/insar -name "*lat*" -o -name "*lon*" -o -name "*hgt*" -o -name "*los*"
+find dates_resampled/(改为reference的日期）/insar -name "*lat*" -o -name "*lon*" -o -name "*hgt*" -o -name "*los*"
 ```
 
 预期：
