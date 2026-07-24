@@ -823,26 +823,83 @@ affine_transform.txt 存在
 
 <a id="sec-2-5"></a>
 
-### 2.5 阶段 3：电离层到检查图
+### 2.5 阶段 3：电离层估计、打包检查图、人工筛查、生成 dates_ion
 
 意义：
 
 ```text
-准备 pairs_ion，计算每个 pair 的电离层相位，并生成 fig_ion 检查图。
+先为当前工程的所有 ion pair 生成电离层检查图 fig_ion。
+把 fig_ion 打包下载到本地人工筛查。
+筛查后只修改坏 pair 列表 EXCLUDE_ION_PAIRS。
+最后自动用保留 pair 跑 ion_ls.py，生成每个日期的电离层相位 dates_ion。
 ```
+
+本阶段分成三部分：
+
+```text
+2.5A 不剔除任何 pair，先自动跑到 fig_ion 检查图
+2.5B 打包 fig_ion，下载到本地人工筛查
+2.5C 修改 EXCLUDE_ION_PAIRS，用保留 pair 生成 dates_ion
+```
+
+这一节的设计目标：
+
+```text
+换区域时，不需要手写所有保留 pair。
+前面的 retarget_project.sh 会批量更新 run_ion_array.slurm 里的 ionpair 列表。
+本节脚本会自动读取 run_ion_array.slurm 的 ionpair。
+人工筛查后只需要改 EXCLUDE_ION_PAIRS。
+```
+
+---
+
+#### 2.5A 不剔除前：自动跑到 fig_ion 检查图
 
 正确顺序：
 
 ```text
 run_ion_pairup.slurm
-run_ion_unwrap_array.slurm
-run_ion_filt_array.slurm
-run_ion_prep_array.slurm
-run_ion_cal_array.slurm
+run_ion_array.slurm subband
+run_ion_array.slurm unwrap
+run_ion_array.slurm filt
+run_ion_array.slurm prep
+run_ion_array.slurm cal
 run_ion_check.slurm
 ```
 
-注意：`run_ion_pairup.slurm` 是单任务；后面 `run_ion_*_array.slurm` 如果是 21 个 pair，必须分块提交，不能一次 `0-20%4`。
+重要说明：
+
+```text
+ion_unwrap 前必须先跑 subband。
+pair 数超过 19 时，每个 stage 都要分块提交，避免 QOSMaxSubmitJobPerUserLimit。
+这一步先用全部 pair 生成 fig_ion，不在这里剔除。
+```
+
+从 2.5 开头重跑前，先停止残留任务并清理旧的 ion 半成品：
+
+```bash
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+squeue -u panada
+ps -u panada -f | grep submit_03 | grep -v grep
+```
+
+如果还有 `submit_03...` 后台脚本，先 `kill PID`。如果 `squeue` 中还有 `ion_*` 任务，先 `scancel JOBID`。
+
+清理旧 ion 结果：
+
+```bash
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+rm -rf pairs_ion dates_ion fig_ion
+rm -f ion_pairup_*.log ion_pairup_*.err
+rm -f ion_array_*.log ion_array_*.err
+rm -f ion_unwrap_*.log ion_unwrap_*.err
+rm -f ion_filt_*.log ion_filt_*.err
+rm -f ion_prep_*.log ion_prep_*.err
+rm -f ion_cal_*.log ion_cal_*.err
+rm -f ion_check_*.log ion_check_*.err
+```
 
 创建自动分块脚本：
 
@@ -863,7 +920,7 @@ ION_MAX_RUNNING=4
 QOS_WAIT=90
 
 get_ion_count () {
-  grep "^ionpair=" "$1" | sed 's/.*=(//; s/).*//' | wc -w
+  grep "^ionpair=" run_ion_array.slurm | sed 's/.*=(//; s/).*//' | wc -w
 }
 
 wait_job () {
@@ -887,12 +944,12 @@ wait_job () {
   sleep "$QOS_WAIT"
 }
 
-submit_ion_chunks () {
-  local script=$1
-  local label=$2
+submit_stage_chunks () {
+  local stage=$1
+  local label="ion_${stage}"
 
   local pair_count
-  pair_count=$(get_ion_count "$script")
+  pair_count=$(get_ion_count)
   local last_index=$((pair_count - 1))
 
   echo "=== $label ==="
@@ -908,7 +965,7 @@ submit_ion_chunks () {
     [ "$n" -lt "$conc" ] && conc="$n"
 
     local jid
-    jid=$(sbatch --parsable --array=${start}-${end}%${conc} "$script")
+    jid=$(sbatch --parsable --array=${start}-${end}%${conc} run_ion_array.slurm "$stage")
     echo "$label ${start}-${end}%${conc} $jid"
     wait_job "$jid" "$label ${start}-${end}%${conc}"
 
@@ -921,10 +978,11 @@ jid_pairup=$(sbatch --parsable run_ion_pairup.slurm)
 echo "ion_pairup $jid_pairup"
 wait_job "$jid_pairup" ion_pairup
 
-submit_ion_chunks run_ion_unwrap_array.slurm ion_unwrap
-submit_ion_chunks run_ion_filt_array.slurm ion_filt
-submit_ion_chunks run_ion_prep_array.slurm ion_prep
-submit_ion_chunks run_ion_cal_array.slurm ion_cal
+submit_stage_chunks subband
+submit_stage_chunks unwrap
+submit_stage_chunks filt
+submit_stage_chunks prep
+submit_stage_chunks cal
 
 echo "=== ion check ==="
 jid_check=$(sbatch --parsable run_ion_check.slurm)
@@ -944,23 +1002,247 @@ nohup bash submit_03_ion_until_check_chunked.sh > submit_03_ion_until_check_chun
 tail -f submit_03_ion_until_check_chunked.log
 ```
 
-人工检查：
+跑完检查：
 
 ```bash
+find pairs_ion -path "*/ion/*" -type f | sort | head -80
 find fig_ion -type f | sort
+find fig_ion -type f | wc -l
 ```
 
-这里必须人工看图，判断每个 pair 是否有严重长波条纹或明显异常。
-
-如果有坏 pair：
+如果 `submit_03_ion_until_check_chunked.log` 最后出现：
 
 ```text
-不要直接删结果。
-先修改 run_ion_ls.slurm 中用于 least squares 的 pair 列表，排除坏 pair。
+=== STOP: inspect fig_ion manually ===
 ```
 
-如果没有坏 pair，继续阶段 4。
+说明 2.5A 正常结束，下一步进入人工筛查。
 
+---
+
+#### 2.5B 打包 fig_ion，下载后人工筛查
+
+在服务器上打包检查图：
+
+```bash
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+tar -czf fig_ion_${USER}_$(date +%Y%m%d_%H%M%S).tar.gz fig_ion
+ls -lh fig_ion_*.tar.gz
+```
+
+如果你想用固定名字，也可以：
+
+```bash
+tar -czf fig_ion_check.tar.gz fig_ion
+ls -lh fig_ion_check.tar.gz
+```
+
+下载到本地 PowerShell 示例：
+
+```powershell
+scp panada@login01:/work/home/panada/insar/proc/alos2_stack_NEW/fig_ion_check.tar.gz D:\noto_NEW\
+```
+
+如果 `login01` 不是你能直接连接的节点，就换成你平时能 `ssh` 的登录节点。
+
+人工筛查每个 pair 的图：
+
+```text
+original   原始差分干涉图
+ionosphere 估计出来的电离层相位
+corrected  按该 pair 的电离层估计校正后的结果
+```
+
+建议保留：
+
+```text
+ionosphere 是相对平滑的长波面
+corrected 比 original 更干净，或至少没有明显变坏
+没有明显奇点、密集条纹、局部强异常
+```
+
+建议剔除：
+
+```text
+ionosphere 出现非常密集的彩色条纹
+ionosphere 有明显汇聚点/奇点
+corrected 比 original 更乱
+corrected 出现局部强条纹或大片异常
+```
+
+筛查结果只记录坏 pair，不删除文件。例如：
+
+```text
+EXCLUDE_ION_PAIRS:
+221230-230127
+230127-230310
+230127-230505
+```
+
+---
+
+#### 2.5C 剔除后：用保留 pair 跑 ion_ls，生成 dates_ion
+
+这一步不要手写所有保留 pair。  
+脚本会自动读取 `run_ion_array.slurm` 里的全部 `ionpair`，然后排除 `EXCLUDE_ION_PAIRS` 中的坏 pair。
+
+修改：
+
+```bash
+nano run_ion_ls.slurm
+```
+
+推荐把 `run_ion_ls.slurm` 改成下面这个通用版本。以后换区域时，只需要改 `EXCLUDE_ION_PAIRS=(...)`。
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=ion_ls
+#SBATCH --output=%x_%j.log
+#SBATCH --error=%x_%j.err
+#SBATCH -c 8
+#SBATCH --export=NONE
+#SBATCH -p wzhctest
+
+set -e
+
+source /etc/profile
+module purge
+source /work/home/panada/env/scons_env/bin/activate
+source /work/home/panada/isce2_env.sh
+
+export ISCE_STACK=/work/home/panada/isce/isce2-main/contrib/stack
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+cd /work/home/panada/insar/proc/alos2_stack_NEW
+
+# ===== CHANGE AFTER MANUAL ION CHECK =====
+# Put bad ion pairs here. Leave empty if all pairs are used.
+# Example:
+# EXCLUDE_ION_PAIRS=(
+#   221230-230127
+#   230127-230310
+# )
+EXCLUDE_ION_PAIRS=()
+
+# ===== DO NOT EDIT BELOW =====
+ALL_PAIRS=($(grep "^ionpair=" run_ion_array.slurm | sed 's/.*=(//; s/).*//'))
+
+KEEP_PAIRS=()
+for p in "${ALL_PAIRS[@]}"; do
+  skip=0
+  for bad in "${EXCLUDE_ION_PAIRS[@]}"; do
+    if [ "$p" = "$bad" ]; then
+      skip=1
+      break
+    fi
+  done
+
+  if [ "$skip" -eq 0 ]; then
+    KEEP_PAIRS+=("$p")
+  fi
+done
+
+echo "ALL_PAIR_COUNT=${#ALL_PAIRS[@]}"
+echo "EXCLUDE_PAIR_COUNT=${#EXCLUDE_ION_PAIRS[@]}"
+echo "KEEP_PAIR_COUNT=${#KEEP_PAIRS[@]}"
+echo "EXCLUDE_PAIRS: ${EXCLUDE_ION_PAIRS[*]}"
+echo "KEEP_PAIRS: ${KEEP_PAIRS[*]}"
+
+if [ "${#KEEP_PAIRS[@]}" -eq 0 ]; then
+  echo "ERROR: KEEP_PAIRS is empty."
+  exit 1
+fi
+
+rm -rf dates_ion
+
+${ISCE_STACK}/alosStack/ion_ls.py \
+  -idir pairs_ion \
+  -odir dates_ion \
+  -ref_date_stack 230127 \
+  -nrlks1 2 \
+  -nalks1 3 \
+  -nrlks2 4 \
+  -nalks2 4 \
+  -nrlks_ion 32 \
+  -nalks_ion 32 \
+  -interp \
+  -pairs "${KEEP_PAIRS[@]}"
+```
+
+如果人工筛查后没有坏 pair：
+
+```bash
+EXCLUDE_ION_PAIRS=()
+```
+
+如果有坏 pair，就只改这一段：
+
+```bash
+EXCLUDE_ION_PAIRS=(
+  BADPAIR_1
+  BADPAIR_2
+)
+```
+
+例如本次如果要剔除 3 对：
+
+```bash
+EXCLUDE_ION_PAIRS=(
+  221230-230127
+  230127-230310
+  230127-230505
+)
+```
+
+检查脚本：
+
+```bash
+bash -n run_ion_ls.slurm
+grep -n "EXCLUDE_ION_PAIRS\\|ALL_PAIR_COUNT\\|KEEP_PAIR_COUNT\\|-pairs" run_ion_ls.slurm
+```
+
+提交：
+
+```bash
+jid_ion_ls=$(sbatch --parsable run_ion_ls.slurm)
+echo "ion_ls: $jid_ion_ls"
+squeue -u panada
+```
+
+跑完检查：
+
+```bash
+sacct -j $jid_ion_ls --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+cat ion_ls_${jid_ion_ls}.err
+tail -n 150 ion_ls_${jid_ion_ls}.log
+```
+
+重点检查日志：
+
+```text
+ALL_PAIR_COUNT=当前全部 pair 数
+EXCLUDE_PAIR_COUNT=人工剔除 pair 数
+KEEP_PAIR_COUNT=实际用于 ion_ls 的 pair 数
+number of pairs to be used in least squares: KEEP_PAIR_COUNT
+observation matrix rank:
+STEP 3. interpolate ionospheric phase
+```
+
+检查输出：
+
+```bash
+find dates_ion -type f | sort
+find dates_ion -name "filt_ion_*_8rlks_12alks.ion" | wc -l
+```
+
+预期：
+
+```text
+filt_ion_*_8rlks_12alks.ion 数量 = 当前工程日期数量
+```
+
+完成后进入 2.6：应用电离层校正。
 <a id="sec-2-6"></a>
 
 ### 2.6 阶段 4：应用电离层校正
